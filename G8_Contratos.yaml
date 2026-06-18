@@ -4,7 +4,7 @@ info:
   title: Grupo 8 - Payment & Notifications API
   version: "1.0.0"
   description: >
-    Contrato REST unificado del Grupo 8 para el Entregable 1.
+    Contrato REST unificado del Grupo 8.
     Incluye los dominios de Pago Simulado y Notificaciones.
     El servicio garantiza idempotencia tanto en pagos (via idempotencyKey)
     como en notificaciones (via eventId con constraint UNIQUE en base de datos).
