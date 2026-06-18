@@ -54,7 +54,7 @@ paths:
               userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
               amount: 59990.00
               currency: "CLP"
-              method: "CARD"
+              method: "MERCADOPAGO"
       responses:
         "201":
           description: Pago iniciado y simulado correctamente.
@@ -68,7 +68,7 @@ paths:
                 userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
                 amount: 59990.00
                 currency: "CLP"
-                method: "CARD"
+                method: "MERCADOPAGO"
                 status: "APPROVED"
                 idempotencyKey: "11111111-2222-4333-8444-555555555555"
                 correlationId: "99999999-8888-4777-9666-555555555555"
@@ -142,7 +142,7 @@ paths:
                 userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
                 amount: 59990.00
                 currency: "CLP"
-                method: "CARD"
+                method: "MERCADOPAGO"
                 status: "APPROVED"
                 idempotencyKey: "11111111-2222-4333-8444-555555555555"
                 correlationId: "99999999-8888-4777-9666-555555555555"
@@ -207,7 +207,7 @@ paths:
                     userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
                     amount: 59990.00
                     currency: "CLP"
-                    method: "CARD"
+                    method: "MERCADOPAGO"
                     status: "APPROVED"
                     idempotencyKey: "11111111-2222-4333-8444-555555555555"
                     correlationId: "99999999-8888-4777-9666-555555555555"
@@ -280,7 +280,7 @@ paths:
                     userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
                     amount: 59990.00
                     currency: "CLP"
-                    method: "CARD"
+                    method: "MERCADOPAGO"
                     status: "APPROVED"
                     idempotencyKey: "11111111-2222-4333-8444-555555555555"
                     correlationId: "99999999-8888-4777-9666-555555555555"
@@ -572,11 +572,11 @@ components:
           example: "CLP"
         method:
           type: string
-          description: Método de pago simulado.
+          description: Pasarela de pago seleccionada por el usuario.
           enum:
-            - CARD
-            - TRANSFER
-          example: "CARD"
+            - MERCADOPAGO
+            - TRANSBANK
+          example: "MERCADOPAGO"
 
     Payment:
       type: object
@@ -613,8 +613,8 @@ components:
         method:
           type: string
           enum:
-            - CARD
-            - TRANSFER
+            - MERCADOPAGO
+            - TRANSBANK
         status:
           type: string
           enum:
