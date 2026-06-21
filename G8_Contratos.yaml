@@ -2,12 +2,16 @@ openapi: 3.0.0
 
 info:
   title: Grupo 8 - Payment & Notifications API
-  version: "1.0.0"
+  version: "1.1.0"
   description: >
     Contrato REST unificado del Grupo 8.
     Incluye los dominios de Pago Simulado y Notificaciones.
     El servicio garantiza idempotencia tanto en pagos (via idempotencyKey)
     como en notificaciones (via eventId con constraint UNIQUE en base de datos).
+    Versión 1.1.0: alineado con las decisiones ejecutivas del 2026-06-19
+    (matriz-conflictos-contratos.md, marketplace-contracts) — campo de
+    error renombrado a `code`, dinero como `integer`, y paginación
+    extendida a {page, pageSize, total, totalPages, hasNext, hasPrev}.
 
 servers:
   - url: https://api.marketplace.example.com
@@ -52,7 +56,7 @@ paths:
             example:
               orderId: "ORD-20260611-001"
               userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-              amount: 59990.00
+              amount: 59990
               currency: "CLP"
               method: "MERCADOPAGO"
       responses:
@@ -66,7 +70,7 @@ paths:
                 paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
                 orderId: "ORD-20260611-001"
                 userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-                amount: 59990.00
+                amount: 59990
                 currency: "CLP"
                 method: "MERCADOPAGO"
                 status: "APPROVED"
@@ -97,15 +101,15 @@ paths:
               examples:
                 invalidAmount:
                   value:
-                    error: "INVALID_AMOUNT"
-                    message: "El monto debe ser un número positivo."
+                    code: "INVALID_AMOUNT"
+                    message: "El monto debe ser un entero positivo."
                 missingIdempotencyKey:
                   value:
-                    error: "MISSING_IDEMPOTENCY_KEY"
+                    code: "MISSING_IDEMPOTENCY_KEY"
                     message: "El header Idempotency-Key es obligatorio para esta operación."
                 invalidCurrency:
                   value:
-                    error: "INVALID_CURRENCY"
+                    code: "INVALID_CURRENCY"
                     message: "Solo se acepta CLP en la versión 1 del servicio."
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -140,7 +144,7 @@ paths:
                 paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
                 orderId: "ORD-20260611-001"
                 userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-                amount: 59990.00
+                amount: 59990
                 currency: "CLP"
                 method: "MERCADOPAGO"
                 status: "APPROVED"
@@ -184,7 +188,7 @@ paths:
             minimum: 1
             default: 1
           description: Número de página (base 1).
-        - name: size
+        - name: pageSize
           in: query
           required: false
           schema:
@@ -205,7 +209,7 @@ paths:
                   - paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
                     orderId: "ORD-20260611-001"
                     userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-                    amount: 59990.00
+                    amount: 59990
                     currency: "CLP"
                     method: "MERCADOPAGO"
                     status: "APPROVED"
@@ -216,8 +220,11 @@ paths:
                     updatedAt: "2026-06-15T20:00:01Z"
                 pagination:
                   page: 1
-                  size: 20
+                  pageSize: 20
                   total: 1
+                  totalPages: 1
+                  hasNext: false
+                  hasPrev: false
         "400":
           description: orderId ausente o inválido.
           content:
@@ -225,7 +232,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
-                error: "MISSING_ORDER_ID"
+                code: "MISSING_ORDER_ID"
                 message: "El parámetro orderId es obligatorio."
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -278,7 +285,7 @@ paths:
                     paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
                     orderId: "ORD-20260611-001"
                     userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-                    amount: 59990.00
+                    amount: 59990
                     currency: "CLP"
                     method: "MERCADOPAGO"
                     status: "APPROVED"
@@ -302,11 +309,11 @@ paths:
               examples:
                 invalidAction:
                   value:
-                    error: "INVALID_ACTION"
+                    code: "INVALID_ACTION"
                     message: "La acción debe ser APPROVE o REJECT."
                 invalidState:
                   value:
-                    error: "INVALID_PAYMENT_STATE"
+                    code: "INVALID_PAYMENT_STATE"
                     message: "Solo se pueden confirmar pagos en estado PENDING."
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -346,7 +353,7 @@ paths:
             minimum: 1
             default: 1
           description: Número de página (base 1).
-        - name: size
+        - name: pageSize
           in: query
           required: false
           schema:
@@ -375,8 +382,11 @@ paths:
                     createdAt: "2026-06-15T20:00:02Z"
                 pagination:
                   page: 1
-                  size: 20
+                  pageSize: 20
                   total: 1
+                  totalPages: 1
+                  hasNext: false
+                  hasPrev: false
         "400":
           description: userId ausente o inválido.
           content:
@@ -384,7 +394,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
-                error: "MISSING_USER_ID"
+                code: "MISSING_USER_ID"
                 message: "El parámetro userId es obligatorio."
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -426,7 +436,7 @@ paths:
                 paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
                 orderId: "ORD-20260611-001"
                 userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-                amount: 59990.00
+                amount: 59990
                 currency: "CLP"
       responses:
         "201":
@@ -448,7 +458,7 @@ paths:
                   paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
                   orderId: "ORD-20260611-001"
                   userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-                  amount: 59990.00
+                  amount: 59990
                   currency: "CLP"
                 createdAt: "2026-06-15T20:00:02Z"
         "200":
@@ -473,11 +483,11 @@ paths:
               examples:
                 invalidFormat:
                   value:
-                    error: "INVALID_EVENT_FORMAT"
+                    code: "INVALID_EVENT_FORMAT"
                     message: "El cuerpo del evento no cumple el formato estándar del curso."
                 missingEventId:
                   value:
-                    error: "MISSING_EVENT_ID"
+                    code: "MISSING_EVENT_ID"
                     message: "El campo eventId es obligatorio."
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -488,17 +498,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
-                error: "UNSUPPORTED_EVENT_TYPE"
+                code: "UNSUPPORTED_EVENT_TYPE"
                 message: "El eventType recibido no genera notificaciones en este servicio."
                 details:
-                  received: "UNKNOWN_EVENT"
-                  supported:
-                    - "ORDER_CREATED"
-                    - "PAYMENT_APPROVED"
-                    - "PAYMENT_REJECTED"
-                    - "PAYMENT_PENDING"
-                    - "SHIPMENT_DELIVERED"
-                    - "STOCK_REJECTED"
+                  - field: "eventType"
+                    message: "Valor recibido 'UNKNOWN_EVENT' no está soportado. Valores válidos: ORDER_CREATED, PAYMENT_APPROVED, PAYMENT_REJECTED, PAYMENT_PENDING, SHIPMENT_DELIVERED, STOCK_REJECTED."
 
 components:
 
@@ -559,14 +563,13 @@ components:
           description: ID del usuario que realiza el pago.
           example: "e9d8c7b6-a543-2109-8765-fedcba098765"
         amount:
-          type: number
-          format: double
-          minimum: 0.01
-          description: Monto a cobrar. Debe ser mayor a cero.
-          example: 59990.00
+          type: integer
+          minimum: 1
+          description: Monto a cobrar en CLP, sin decimales. Debe ser mayor a cero.
+          example: 59990
         currency:
           type: string
-          description: Moneda del pago. Solo se acepta CLP en v1.
+          description: Moneda del pago. Solo se acepta CLP.
           enum:
             - CLP
           example: "CLP"
@@ -604,9 +607,9 @@ components:
           format: uuid
           example: "e9d8c7b6-a543-2109-8765-fedcba098765"
         amount:
-          type: number
-          format: double
-          example: 59990.00
+          type: integer
+          description: Monto del pago en CLP, sin decimales.
+          example: 59990
         currency:
           type: string
           example: "CLP"
@@ -759,7 +762,7 @@ components:
             paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
             orderId: "ORD-20260611-001"
             userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-            amount: 59990.00
+            amount: 59990
             currency: "CLP"
 
     Notification:
@@ -869,29 +872,44 @@ components:
       type: object
       required:
         - page
-        - size
+        - pageSize
         - total
+        - totalPages
+        - hasNext
+        - hasPrev
       properties:
         page:
           type: integer
-          description: Página actual.
+          description: Página actual (base 1).
           example: 1
-        size:
+        pageSize:
           type: integer
-          description: Tamaño de página.
+          description: Cantidad de resultados por página.
           example: 20
         total:
           type: integer
           description: Total de registros encontrados.
           example: 1
+        totalPages:
+          type: integer
+          description: Cantidad total de páginas disponibles.
+          example: 1
+        hasNext:
+          type: boolean
+          description: Indica si existe una página siguiente.
+          example: false
+        hasPrev:
+          type: boolean
+          description: Indica si existe una página anterior.
+          example: false
 
     ErrorResponse:
       type: object
       required:
-        - error
+        - code
         - message
       properties:
-        error:
+        code:
           type: string
           description: Código de error en mayúsculas y snake_case.
           example: "PAYMENT_NOT_FOUND"
@@ -900,9 +918,23 @@ components:
           description: Descripción legible del error.
           example: "El pago solicitado no existe."
         details:
-          type: object
+          type: array
           nullable: true
-          description: Información adicional de contexto (opcional).
+          description: Detalle adicional por campo, cuando aplica.
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                example: "amount"
+              message:
+                type: string
+                example: "Debe ser un entero mayor a cero."
+        correlationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: ID de trazabilidad distribuida propagado desde el request, cuando está disponible.
 
   responses:
 
@@ -913,7 +945,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
-            error: "UNAUTHORIZED_ACCESS"
+            code: "UNAUTHORIZED_ACCESS"
             message: "Token JWT ausente, inválido o expirado."
 
     Forbidden:
@@ -923,7 +955,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
-            error: "FORBIDDEN"
+            code: "FORBIDDEN"
             message: "No tienes permiso para acceder a este recurso."
 
     PaymentNotFound:
@@ -933,7 +965,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
-            error: "PAYMENT_NOT_FOUND"
+            code: "PAYMENT_NOT_FOUND"
             message: "El pago solicitado no existe."
 
     UserNotFound:
@@ -943,7 +975,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
-            error: "USER_NOT_FOUND"
+            code: "USER_NOT_FOUND"
             message: "No se encontraron notificaciones para el userId indicado."
 
     UnprocessablePayment:
@@ -953,5 +985,5 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
-            error: "UNPROCESSABLE_PAYMENT"
+            code: "UNPROCESSABLE_PAYMENT"
             message: "El pago no pudo ser procesado. Verifique los datos enviados."
