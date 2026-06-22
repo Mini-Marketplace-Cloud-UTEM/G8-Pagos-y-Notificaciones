@@ -1,0 +1,26 @@
+from pydantic import BaseModel, Field
+from typing import Optional
+
+class CreatePaymentRequest(BaseModel):
+    order_id: str = Field(alias="orderId", example="ORD-20260611-001")
+    user_id: str = Field(alias="userId", example="e9d8c7b6-a543-2109-8765-fedcba098765")
+    amount: int = Field(example=59990)
+    currency: str = Field(example="CLP")
+    method: str = Field(example="MERCADOPAGO")
+
+class PaymentResponse(BaseModel):
+    payment_id: str = Field(alias="paymentId")
+    order_id: str = Field(alias="orderId")
+    user_id: str = Field(alias="userId")
+    amount: int
+    currency: str
+    method: str
+    status: str
+    idempotency_key: str = Field(alias="idempotencyKey")
+    correlation_id: Optional[str] = Field(None, alias="correlationId")
+    failure_reason: Optional[str] = Field(None, alias="failureReason")
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
+
+    class Config:
+        populate_by_name = True

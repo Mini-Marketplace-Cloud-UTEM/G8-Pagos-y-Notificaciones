@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    container_name: g8_pagos_notificaciones
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+    env_file:
+      - .env
+    environment:
+      # Para asegurar que Python no guarde los logs en caché
+      - PYTHONUNBUFFERED=1
