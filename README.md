@@ -24,14 +24,15 @@ El contrato completo (OpenAPI 3.0) está en [`docs/G8_Contratos.yaml`](./docs/G8
 
 Para visualizar el contrato de forma interactiva:
 
-bash
+```bash
 npx @stoplight/prism-cli mock docs/G8_Contratos.yaml
+```
 
 Esto levanta un mock local en `http://127.0.0.1:4010` que responde con los ejemplos definidos en el contrato.
 
-
 ## Estructura del proyecto
 
+```
 G8-Pagos-y-Notificaciones/
 ├── app/
 │   ├── main.py              # Punto de entrada FastAPI
@@ -47,11 +48,11 @@ G8-Pagos-y-Notificaciones/
 ├── Dockerfile
 ├── requirements.txt
 └── README.md
-
+```
 
 ## Cómo correr el proyecto localmente
 
-bash
+```bash
 # 1. Clonar el repositorio
 git clone https://github.com/Mini-Marketplace-Cloud-UTEM/G8-Pagos-y-Notificaciones.git
 cd G8-Pagos-y-Notificaciones
@@ -67,7 +68,7 @@ cp .env.example .env
 
 # 4. Levantar el servidor de desarrollo
 uvicorn app.main:app --reload
-
+```
 
 El servicio quedará disponible en `http://localhost:8000`. La documentación interactiva (Swagger) se genera automáticamente en `http://localhost:8000/docs`.
 
@@ -92,7 +93,7 @@ Nicolás Céspedes · Diego Vásquez · Camilo Arteaga · Walter Olarte
 | Grupo 5 — Pedidos | Inicia pagos vía `POST /v1/payments` |
 | Grupo 6 — Despacho | Publica el evento `ShipmentDelivered` que consumimos |
 | Grupo 1 — Frontend | Consume `GET /v1/notifications` |
-| Grupo 7 — Reportería | Consume nuestros eventos de pago para reportes |
+| Grupo 10 — Reportería | Consume nuestros eventos de pago para reportes |
 
 ## Estado del proyecto
 
