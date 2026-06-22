@@ -1,1 +1,989 @@
+openapi: 3.0.0
 
+info:
+  title: Grupo 8 - Payment & Notifications API
+  version: "1.1.0"
+  description: >
+    Contrato REST unificado del Grupo 8.
+    Incluye los dominios de Pago Simulado y Notificaciones.
+    El servicio garantiza idempotencia tanto en pagos (via idempotencyKey)
+    como en notificaciones (via eventId con constraint UNIQUE en base de datos).
+    Versión 1.1.0: alineado con las decisiones ejecutivas del 2026-06-19
+    (matriz-conflictos-contratos.md, marketplace-contracts) — campo de
+    error renombrado a `code`, dinero como `integer`, y paginación
+    extendida a {page, pageSize, total, totalPages, hasNext, hasPrev}.
+
+servers:
+  - url: https://api.marketplace.example.com
+    description: Producción
+  - url: http://localhost:8001
+    description: Desarrollo local
+
+tags:
+  - name: Payments
+    description: Operaciones asociadas al pago simulado.
+  - name: Notifications
+    description: Operaciones asociadas a la gestión de notificaciones.
+
+paths:
+
+  # ─────────────────────────────────────────────
+  # PAGOS
+  # ─────────────────────────────────────────────
+
+  /v1/payments:
+    post:
+      tags:
+        - Payments
+      summary: Iniciar pago
+      description: >
+        Recibe una solicitud de pago desde el servicio de Pedidos (Grupo 5)
+        y simula un resultado: APPROVED, REJECTED o PENDING.
+        Esta operación es idempotente: si se recibe un idempotencyKey ya
+        procesado, se retorna el resultado original sin reprocesar ni
+        emitir un nuevo evento.
+      operationId: createPayment
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+        - $ref: "#/components/parameters/CorrelationIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePaymentRequest"
+            example:
+              orderId: "ORD-20260611-001"
+              userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+              amount: 59990
+              currency: "CLP"
+              method: "MERCADOPAGO"
+      responses:
+        "201":
+          description: Pago iniciado y simulado correctamente.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+              example:
+                paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+                orderId: "ORD-20260611-001"
+                userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+                amount: 59990
+                currency: "CLP"
+                method: "MERCADOPAGO"
+                status: "APPROVED"
+                idempotencyKey: "11111111-2222-4333-8444-555555555555"
+                correlationId: "99999999-8888-4777-9666-555555555555"
+                failureReason: null
+                createdAt: "2026-06-15T20:00:00Z"
+                updatedAt: "2026-06-15T20:00:01Z"
+        "200":
+          description: >
+            Pago ya procesado anteriormente (respuesta idempotente).
+            Se retorna el resultado original sin reprocesar.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentIdempotentResponse"
+              example:
+                paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+                status: "APPROVED"
+                idempotent: true
+                message: "Pago ya procesado con este idempotencyKey."
+        "400":
+          description: Datos inválidos o Idempotency-Key ausente.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidAmount:
+                  value:
+                    code: "INVALID_AMOUNT"
+                    message: "El monto debe ser un entero positivo."
+                missingIdempotencyKey:
+                  value:
+                    code: "MISSING_IDEMPOTENCY_KEY"
+                    message: "El header Idempotency-Key es obligatorio para esta operación."
+                invalidCurrency:
+                  value:
+                    code: "INVALID_CURRENCY"
+                    message: "Solo se acepta CLP en la versión 1 del servicio."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessablePayment"
+
+  /v1/payments/{paymentId}:
+    get:
+      tags:
+        - Payments
+      summary: Consultar pago por ID
+      description: Retorna el estado actual y el detalle completo de un pago.
+      operationId: getPaymentById
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/CorrelationIdHeader"
+        - name: paymentId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+          description: Identificador único del pago.
+      responses:
+        "200":
+          description: Pago encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+              example:
+                paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+                orderId: "ORD-20260611-001"
+                userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+                amount: 59990
+                currency: "CLP"
+                method: "MERCADOPAGO"
+                status: "APPROVED"
+                idempotencyKey: "11111111-2222-4333-8444-555555555555"
+                correlationId: "99999999-8888-4777-9666-555555555555"
+                failureReason: null
+                createdAt: "2026-06-15T20:00:00Z"
+                updatedAt: "2026-06-15T20:00:01Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/PaymentNotFound"
+
+  /v1/payments:
+    get:
+      tags:
+        - Payments
+      summary: Listar pagos por pedido
+      description: >
+        Retorna todos los pagos asociados a un orderId, con soporte de
+        paginación. Útil para que el Grupo 5 consulte el historial de
+        intentos de pago de un pedido.
+      operationId: listPaymentsByOrder
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/CorrelationIdHeader"
+        - name: orderId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: ID del pedido cuyos pagos se quieren consultar.
+          example: "ORD-20260611-001"
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Número de página (base 1).
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Cantidad de resultados por página.
+      responses:
+        "200":
+          description: Lista de pagos del pedido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentListResponse"
+              example:
+                data:
+                  - paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+                    orderId: "ORD-20260611-001"
+                    userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+                    amount: 59990
+                    currency: "CLP"
+                    method: "MERCADOPAGO"
+                    status: "APPROVED"
+                    idempotencyKey: "11111111-2222-4333-8444-555555555555"
+                    correlationId: "99999999-8888-4777-9666-555555555555"
+                    failureReason: null
+                    createdAt: "2026-06-15T20:00:00Z"
+                    updatedAt: "2026-06-15T20:00:01Z"
+                pagination:
+                  page: 1
+                  pageSize: 20
+                  total: 1
+                  totalPages: 1
+                  hasNext: false
+                  hasPrev: false
+        "400":
+          description: orderId ausente o inválido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "MISSING_ORDER_ID"
+                message: "El parámetro orderId es obligatorio."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/PaymentNotFound"
+
+  /v1/payments/{paymentId}/confirm:
+    patch:
+      tags:
+        - Payments
+      summary: Confirmar o rechazar un pago
+      description: >
+        Confirma o rechaza manualmente un pago en estado PENDING.
+        Esta operación es idempotente: si el pago ya se encuentra en
+        estado APPROVED o REJECTED, se retorna 200 con idempotent: true
+        sin reprocesar ni emitir un nuevo evento al bus.
+        Concepto técnico obligatorio: idempotencia sobre confirmación de pagos.
+      operationId: confirmPayment
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/CorrelationIdHeader"
+        - name: paymentId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+          description: Identificador único del pago a confirmar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmPaymentRequest"
+            example:
+              action: "APPROVE"
+              reason: null
+      responses:
+        "200":
+          description: >
+            Pago confirmado o rechazado correctamente.
+            Si ya estaba en estado final, se retorna idempotent: true.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+              examples:
+                approved:
+                  value:
+                    paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+                    orderId: "ORD-20260611-001"
+                    userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+                    amount: 59990
+                    currency: "CLP"
+                    method: "MERCADOPAGO"
+                    status: "APPROVED"
+                    idempotencyKey: "11111111-2222-4333-8444-555555555555"
+                    correlationId: "99999999-8888-4777-9666-555555555555"
+                    failureReason: null
+                    createdAt: "2026-06-15T20:00:00Z"
+                    updatedAt: "2026-06-15T20:00:05Z"
+                idempotentResponse:
+                  value:
+                    paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+                    status: "APPROVED"
+                    idempotent: true
+                    message: "Pago ya se encuentra en estado final. No se reprocesó."
+        "400":
+          description: Acción inválida o pago en estado no confirmable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidAction:
+                  value:
+                    code: "INVALID_ACTION"
+                    message: "La acción debe ser APPROVE o REJECT."
+                invalidState:
+                  value:
+                    code: "INVALID_PAYMENT_STATE"
+                    message: "Solo se pueden confirmar pagos en estado PENDING."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/PaymentNotFound"
+
+  # ─────────────────────────────────────────────
+  # NOTIFICACIONES
+  # ─────────────────────────────────────────────
+
+  /v1/notifications:
+    get:
+      tags:
+        - Notifications
+      summary: Listar notificaciones de un usuario
+      description: >
+        Retorna las notificaciones de un usuario con soporte de paginación.
+        Usado principalmente por el Frontend (Grupo 1) para mostrar el
+        centro de notificaciones del usuario.
+      operationId: listNotifications
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/CorrelationIdHeader"
+        - name: userId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: ID del usuario cuyas notificaciones se quieren listar.
+          example: "e9d8c7b6-a543-2109-8765-fedcba098765"
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Número de página (base 1).
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Cantidad de resultados por página.
+      responses:
+        "200":
+          description: Lista de notificaciones del usuario.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationListResponse"
+              example:
+                data:
+                  - notificationId: "NTF-b2c3d4e5-f6a7-8901-2345-67890abcdef1"
+                    userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+                    eventId: "evt-550e8400-e29b-41d4-a716-446655440001"
+                    eventType: "PAYMENT_APPROVED"
+                    title: "¡Tu pago fue aprobado!"
+                    body: "El pago de tu pedido ORD-20260611-001 fue procesado exitosamente."
+                    channel: "DASHBOARD"
+                    status: "DELIVERED"
+                    createdAt: "2026-06-15T20:00:02Z"
+                pagination:
+                  page: 1
+                  pageSize: 20
+                  total: 1
+                  totalPages: 1
+                  hasNext: false
+                  hasPrev: false
+        "400":
+          description: userId ausente o inválido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "MISSING_USER_ID"
+                message: "El parámetro userId es obligatorio."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
+  /v1/notifications/test:
+    post:
+      tags:
+        - Notifications
+      summary: Inyectar evento de prueba
+      description: >
+        Permite inyectar manualmente un evento en el formato estándar del
+        curso para probar la generación de notificaciones sin necesidad de
+        publicar en el bus de eventos real.
+        Esta operación es idempotente: si el eventId ya fue procesado,
+        se retorna 200 con idempotent: true sin crear una notificación
+        duplicada. La idempotencia se garantiza mediante un constraint
+        UNIQUE en la columna eventId de la base de datos.
+        Concepto técnico obligatorio: idempotencia sobre recepción de eventos.
+      operationId: testNotification
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/CorrelationIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestNotificationRequest"
+            example:
+              eventId: "evt-550e8400-e29b-41d4-a716-446655440001"
+              eventType: "PAYMENT_APPROVED"
+              version: "1.0"
+              occurredAt: "2026-06-15T20:00:00Z"
+              producer: "g8-pagos"
+              correlationId: "99999999-8888-4777-9666-555555555555"
+              payload:
+                paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+                orderId: "ORD-20260611-001"
+                userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+                amount: 59990
+                currency: "CLP"
+      responses:
+        "201":
+          description: Notificación generada correctamente.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+              example:
+                notificationId: "NTF-b2c3d4e5-f6a7-8901-2345-67890abcdef1"
+                userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+                eventId: "evt-550e8400-e29b-41d4-a716-446655440001"
+                eventType: "PAYMENT_APPROVED"
+                title: "¡Tu pago fue aprobado!"
+                body: "El pago de tu pedido ORD-20260611-001 fue procesado exitosamente."
+                channel: "DASHBOARD"
+                status: "DELIVERED"
+                payload:
+                  paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+                  orderId: "ORD-20260611-001"
+                  userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+                  amount: 59990
+                  currency: "CLP"
+                createdAt: "2026-06-15T20:00:02Z"
+        "200":
+          description: >
+            Evento ya procesado anteriormente (respuesta idempotente).
+            No se creó una notificación duplicada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationIdempotentResponse"
+              example:
+                notificationId: "NTF-b2c3d4e5-f6a7-8901-2345-67890abcdef1"
+                eventId: "evt-550e8400-e29b-41d4-a716-446655440001"
+                idempotent: true
+                message: "Evento ya procesado. No se generó notificación duplicada."
+        "400":
+          description: Formato de evento inválido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidFormat:
+                  value:
+                    code: "INVALID_EVENT_FORMAT"
+                    message: "El cuerpo del evento no cumple el formato estándar del curso."
+                missingEventId:
+                  value:
+                    code: "MISSING_EVENT_ID"
+                    message: "El campo eventId es obligatorio."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          description: Tipo de evento no soportado por el servicio de notificaciones.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "UNSUPPORTED_EVENT_TYPE"
+                message: "El eventType recibido no genera notificaciones en este servicio."
+                details:
+                  - field: "eventType"
+                    message: "Valor recibido 'UNKNOWN_EVENT' no está soportado. Valores válidos: ORDER_CREATED, PAYMENT_APPROVED, PAYMENT_REJECTED, PAYMENT_PENDING, SHIPMENT_DELIVERED, STOCK_REJECTED."
+
+components:
+
+  parameters:
+    AuthorizationHeader:
+      name: Authorization
+      in: header
+      required: true
+      schema:
+        type: string
+        example: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+      description: Token JWT emitido por el servicio de identidad (Grupo 2).
+
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+        example: "11111111-2222-4333-8444-555555555555"
+      description: >
+        UUID único por intento de pago. Obligatorio en POST /v1/payments.
+        Si se reutiliza, el servicio retorna el resultado original sin reprocesar.
+
+    CorrelationIdHeader:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+        example: "99999999-8888-4777-9666-555555555555"
+      description: >
+        Identificador para trazabilidad distribuida entre servicios.
+        Se propaga en todos los eventos publicados al bus.
+
+  schemas:
+
+    # ── PAGOS ──────────────────────────────────
+
+    CreatePaymentRequest:
+      type: object
+      required:
+        - orderId
+        - userId
+        - amount
+        - currency
+        - method
+      properties:
+        orderId:
+          type: string
+          description: ID del pedido que origina el pago. Proviene del Grupo 5.
+          example: "ORD-20260611-001"
+        userId:
+          type: string
+          format: uuid
+          description: ID del usuario que realiza el pago.
+          example: "e9d8c7b6-a543-2109-8765-fedcba098765"
+        amount:
+          type: integer
+          minimum: 1
+          description: Monto a cobrar en CLP, sin decimales. Debe ser mayor a cero.
+          example: 59990
+        currency:
+          type: string
+          description: Moneda del pago. Solo se acepta CLP.
+          enum:
+            - CLP
+          example: "CLP"
+        method:
+          type: string
+          description: Pasarela de pago seleccionada por el usuario.
+          enum:
+            - MERCADOPAGO
+            - TRANSBANK
+          example: "MERCADOPAGO"
+
+    Payment:
+      type: object
+      required:
+        - paymentId
+        - orderId
+        - userId
+        - amount
+        - currency
+        - method
+        - status
+        - idempotencyKey
+        - createdAt
+        - updatedAt
+      properties:
+        paymentId:
+          type: string
+          description: Identificador único del pago generado por el servicio.
+          example: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+        orderId:
+          type: string
+          example: "ORD-20260611-001"
+        userId:
+          type: string
+          format: uuid
+          example: "e9d8c7b6-a543-2109-8765-fedcba098765"
+        amount:
+          type: integer
+          description: Monto del pago en CLP, sin decimales.
+          example: 59990
+        currency:
+          type: string
+          example: "CLP"
+        method:
+          type: string
+          enum:
+            - MERCADOPAGO
+            - TRANSBANK
+        status:
+          type: string
+          enum:
+            - PENDING
+            - APPROVED
+            - REJECTED
+            - CANCELLED
+          description: Estado actual del pago.
+        idempotencyKey:
+          type: string
+          format: uuid
+          description: Clave de idempotencia asociada al pago.
+        correlationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: ID de trazabilidad distribuida propagado desde el request.
+        failureReason:
+          type: string
+          nullable: true
+          description: Razón del rechazo. Solo presente cuando status es REJECTED.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PaymentIdempotentResponse:
+      type: object
+      required:
+        - paymentId
+        - status
+        - idempotent
+        - message
+      properties:
+        paymentId:
+          type: string
+          example: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+        status:
+          type: string
+          enum:
+            - PENDING
+            - APPROVED
+            - REJECTED
+            - CANCELLED
+        idempotent:
+          type: boolean
+          description: Siempre true en respuestas idempotentes.
+          example: true
+        message:
+          type: string
+          example: "Pago ya procesado con este idempotencyKey."
+
+    PaymentListResponse:
+      type: object
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Payment"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    ConfirmPaymentRequest:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - APPROVE
+            - REJECT
+          description: Acción a ejecutar sobre el pago.
+        reason:
+          type: string
+          nullable: true
+          description: >
+            Razón del rechazo. Obligatorio si action es REJECT,
+            ignorado si action es APPROVE.
+          example: "Fondos insuficientes."
+
+    # ── NOTIFICACIONES ──────────────────────────
+
+    TestNotificationRequest:
+      type: object
+      required:
+        - eventId
+        - eventType
+        - version
+        - occurredAt
+        - producer
+        - payload
+      properties:
+        eventId:
+          type: string
+          description: >
+            Identificador único del evento. Clave de idempotencia:
+            si ya fue procesado, no se creará una notificación duplicada.
+          example: "evt-550e8400-e29b-41d4-a716-446655440001"
+        eventType:
+          type: string
+          description: Tipo de evento que dispara la notificación.
+          enum:
+            - ORDER_CREATED
+            - PAYMENT_APPROVED
+            - PAYMENT_REJECTED
+            - PAYMENT_PENDING
+            - SHIPMENT_DELIVERED
+            - STOCK_REJECTED
+          example: "PAYMENT_APPROVED"
+        version:
+          type: string
+          description: Versión del contrato de evento.
+          example: "1.0"
+        occurredAt:
+          type: string
+          format: date-time
+          description: Timestamp en que ocurrió el evento en el servicio de origen.
+          example: "2026-06-15T20:00:00Z"
+        producer:
+          type: string
+          description: Identificador del servicio que generó el evento.
+          example: "g8-pagos"
+        correlationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: ID de trazabilidad distribuida.
+          example: "99999999-8888-4777-9666-555555555555"
+        payload:
+          type: object
+          description: >
+            Contenido variable según eventType. Se almacena completo en JSONB.
+            Para ShipmentDelivered (Grupo 6): los campos vienen en snake_case
+            (order_id, customer_name) y el servicio los normaliza internamente.
+          example:
+            paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
+            orderId: "ORD-20260611-001"
+            userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+            amount: 59990
+            currency: "CLP"
+
+    Notification:
+      type: object
+      required:
+        - notificationId
+        - userId
+        - eventId
+        - eventType
+        - title
+        - body
+        - channel
+        - status
+        - createdAt
+      properties:
+        notificationId:
+          type: string
+          description: Identificador único de la notificación.
+          example: "NTF-b2c3d4e5-f6a7-8901-2345-67890abcdef1"
+        userId:
+          type: string
+          format: uuid
+          description: Usuario destinatario de la notificación.
+          example: "e9d8c7b6-a543-2109-8765-fedcba098765"
+        eventId:
+          type: string
+          description: >
+            ID del evento que originó esta notificación.
+            Tiene constraint UNIQUE en base de datos (garantía de idempotencia).
+          example: "evt-550e8400-e29b-41d4-a716-446655440001"
+        eventType:
+          type: string
+          enum:
+            - ORDER_CREATED
+            - PAYMENT_APPROVED
+            - PAYMENT_REJECTED
+            - PAYMENT_PENDING
+            - SHIPMENT_DELIVERED
+            - STOCK_REJECTED
+        title:
+          type: string
+          example: "¡Tu pago fue aprobado!"
+        body:
+          type: string
+          example: "El pago de tu pedido ORD-20260611-001 fue procesado exitosamente."
+        channel:
+          type: string
+          enum:
+            - EMAIL
+            - DASHBOARD
+            - LOG
+          default: DASHBOARD
+        status:
+          type: string
+          enum:
+            - PENDING
+            - DELIVERED
+            - READ
+            - FAILED
+        payload:
+          type: object
+          nullable: true
+          description: Payload completo del evento almacenado en JSONB.
+        createdAt:
+          type: string
+          format: date-time
+
+    NotificationIdempotentResponse:
+      type: object
+      required:
+        - notificationId
+        - eventId
+        - idempotent
+        - message
+      properties:
+        notificationId:
+          type: string
+          description: ID de la notificación original ya creada.
+          example: "NTF-b2c3d4e5-f6a7-8901-2345-67890abcdef1"
+        eventId:
+          type: string
+          example: "evt-550e8400-e29b-41d4-a716-446655440001"
+        idempotent:
+          type: boolean
+          description: Siempre true en respuestas idempotentes.
+          example: true
+        message:
+          type: string
+          example: "Evento ya procesado. No se generó notificación duplicada."
+
+    NotificationListResponse:
+      type: object
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Notification"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    # ── COMPARTIDOS ─────────────────────────────
+
+    Pagination:
+      type: object
+      required:
+        - page
+        - pageSize
+        - total
+        - totalPages
+        - hasNext
+        - hasPrev
+      properties:
+        page:
+          type: integer
+          description: Página actual (base 1).
+          example: 1
+        pageSize:
+          type: integer
+          description: Cantidad de resultados por página.
+          example: 20
+        total:
+          type: integer
+          description: Total de registros encontrados.
+          example: 1
+        totalPages:
+          type: integer
+          description: Cantidad total de páginas disponibles.
+          example: 1
+        hasNext:
+          type: boolean
+          description: Indica si existe una página siguiente.
+          example: false
+        hasPrev:
+          type: boolean
+          description: Indica si existe una página anterior.
+          example: false
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Código de error en mayúsculas y snake_case.
+          example: "PAYMENT_NOT_FOUND"
+        message:
+          type: string
+          description: Descripción legible del error.
+          example: "El pago solicitado no existe."
+        details:
+          type: array
+          nullable: true
+          description: Detalle adicional por campo, cuando aplica.
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                example: "amount"
+              message:
+                type: string
+                example: "Debe ser un entero mayor a cero."
+        correlationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: ID de trazabilidad distribuida propagado desde el request, cuando está disponible.
+
+  responses:
+
+    Unauthorized:
+      description: Usuario no autenticado o token JWT inválido.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: "UNAUTHORIZED_ACCESS"
+            message: "Token JWT ausente, inválido o expirado."
+
+    Forbidden:
+      description: Usuario autenticado pero sin permisos sobre el recurso.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: "FORBIDDEN"
+            message: "No tienes permiso para acceder a este recurso."
+
+    PaymentNotFound:
+      description: Pago no encontrado.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: "PAYMENT_NOT_FOUND"
+            message: "El pago solicitado no existe."
+
+    UserNotFound:
+      description: Usuario no encontrado.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: "USER_NOT_FOUND"
+            message: "No se encontraron notificaciones para el userId indicado."
+
+    UnprocessablePayment:
+      description: El pago no pudo ser simulado por datos de negocio inválidos.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: "UNPROCESSABLE_PAYMENT"
+            message: "El pago no pudo ser procesado. Verifique los datos enviados."
