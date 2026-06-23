@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 
 class CreatePaymentRequest(BaseModel):
     order_id: str = Field(alias="orderId", example="ORD-20260611-001")
@@ -24,6 +24,40 @@ class PaymentResponse(BaseModel):
     failure_reason: Optional[str] = Field(None, alias="failureReason")
     created_at: str = Field(alias="createdAt")
     updated_at: str = Field(alias="updatedAt")
+
+    class Config:
+        populate_by_name = True
+        by_alias = True
+
+class PaginationResponse(BaseModel):
+    page: int
+    page_size: int = Field(alias="pageSize")
+    total: int
+    total_pages: int = Field(alias="totalPages")
+    has_next: bool = Field(alias="hasNext")
+    has_prev: bool = Field(alias="hasPrev")
+
+    class Config:
+        populate_by_name = True
+        by_alias = True
+
+class PaymentListResponse(BaseModel):
+    data: List[PaymentResponse]
+    pagination: PaginationResponse
+
+    class Config:
+        populate_by_name = True
+        by_alias = True
+
+class ErrorDetail(BaseModel):
+    field: Optional[str] = None
+    message: Optional[str] = None
+
+class ErrorResponse(BaseModel):
+    code: str
+    message: str
+    details: Optional[List[ErrorDetail]] = None
+    correlation_id: Optional[str] = Field(None, alias="correlationId")
 
     class Config:
         populate_by_name = True
