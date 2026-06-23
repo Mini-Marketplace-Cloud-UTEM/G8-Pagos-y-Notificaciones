@@ -67,6 +67,7 @@ def confirm_payment(
     body: ConfirmPaymentRequest,
     authorization: Optional[str] = Header(
         None, 
+        alias="Authorization",
         description="Para probar el mock, escribe cualquier cosa aquí, ej: Bearer 123"
     ),
     correlation_id: Optional[str] = Header(None, alias="X-Correlation-Id"),
@@ -131,6 +132,7 @@ def get_payment_by_id(
     payment_id: str,
     authorization: Optional[str] = Header(
         None, 
+        alias="Authorization",
         description="Para probar el mock, escribe cualquier cosa aquí, ej: Bearer 123"
     ),
     correlation_id: Optional[str] = Header(None, alias="X-Correlation-Id"),
@@ -164,6 +166,7 @@ def list_payments_by_order(
     page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
     authorization: Optional[str] = Header(
         None,
+        alias="Authorization",
         description="Para probar el mock, escribe cualquier cosa aquí, ej: Bearer 123"
     ),
     correlation_id: Optional[str] = Header(None, alias="X-Correlation-Id"),
