@@ -8,7 +8,7 @@ definidos en docs/G8_Contratos.yaml.
 
 from fastapi import FastAPI
 
-from app.routes import payments
+from app.routes import payments, notifications
 
 app = FastAPI(
     title="Grupo 8 - Payment & Notifications API",
@@ -25,3 +25,4 @@ def health_check():
     }
 
 app.include_router(payments.router)
+app.include_router(notifications.router)
