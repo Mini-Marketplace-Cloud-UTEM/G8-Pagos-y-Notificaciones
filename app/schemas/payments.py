@@ -29,6 +29,20 @@ class PaymentResponse(BaseModel):
         populate_by_name = True
         by_alias = True
 
+class ConfirmPaymentRequest(BaseModel):
+    action: str = Field(example="APPROVE")
+    reason: Optional[str] = Field(None, example="Fondos insuficientes.")
+
+class PaymentIdempotentResponse(BaseModel):
+    payment_id: str = Field(alias="paymentId")
+    status: str
+    idempotent: bool = True
+    message: str
+
+    class Config:
+        populate_by_name = True
+        by_alias = True
+
 class PaginationResponse(BaseModel):
     page: int
     page_size: int = Field(alias="pageSize")

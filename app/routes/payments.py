@@ -1,9 +1,8 @@
 import math
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from typing import Optional, List
 from datetime import datetime, timezone
-from app.schemas.payments import CreatePaymentRequest, PaymentResponse
 from pydantic import BaseModel
 
 # Importamos los modelos desde nuestra nueva carpeta schemas
@@ -13,6 +12,8 @@ from app.schemas.payments import (
     PaymentListResponse,
     PaginationResponse,
     ErrorResponse,
+    ConfirmPaymentRequest,
+    PaymentIdempotentResponse
 )
 from app.services.payments_mock import MOCK_PAYMENTS
 
@@ -22,8 +23,8 @@ router = APIRouter(prefix="/v1/payments", tags=["Payments"])
 @router.post("", response_model=PaymentResponse, status_code=201)
 def create_payment(
     request: CreatePaymentRequest,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
-    correlation_id: Optional[str] = Header(None, alias="X-Correlation-Id"),
+    idempotency_key: str = Header(..., alias="Idempotency-Key", example="11111111-2222-4333-8444-555555555555"),
+    correlation_id: Optional[str] = Header(None, alias="X-Correlation-Id", example="99999999-8888-4777-9666-555555555555"),
     authorization: Optional[str] = Header(None)
 ):
     """
@@ -45,6 +46,59 @@ def create_payment(
         created_at=now,
         updated_at=now
     )
+
+@router.patch("/{payment_id}/confirm")
+def confirm_payment(
+    payment_id: str, 
+    body: ConfirmPaymentRequest,
+    authorization: Optional[str] = Header(
+        None, 
+        description="Para probar el mock, escribe cualquier cosa aquí, ej: Bearer 123"
+    ),
+    correlation_id: Optional[str] = Header(None, alias="X-Correlation-Id"),
+):
+    """
+    Mock del endpoint para confirmar o rechazar un pago.
+    Garantiza idempotencia si el pago ya está en estado final.
+    """
+    if not authorization:
+        return _unauthorized_response(correlation_id)
+
+    # Buscamos el pago en la lista global MOCK_PAYMENTS
+    pago = next((p for p in MOCK_PAYMENTS if p["payment_id"] == payment_id), None)
+
+    if pago is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "PAYMENT_NOT_FOUND",
+            "message": "El pago solicitado no existe."
+        })
+
+    if body.action not in ["APPROVE", "REJECT"]:
+        raise HTTPException(status_code=400, detail={
+            "code": "INVALID_ACTION",
+            "message": "La acción debe ser APPROVE o REJECT."
+        })
+
+    # Lógica de idempotencia intacta
+    if pago["status"] in ["APPROVED", "REJECTED"]:
+        return JSONResponse(status_code=200, content={
+            "paymentId": pago["payment_id"],
+            "status": pago["status"],
+            "idempotent": True,
+            "message": "Pago ya se encuentra en estado final. No se reprocesó."
+        })
+
+    # Actualizamos el pago en memoria
+    if body.action == "APPROVE":
+        pago["status"] = "APPROVED"
+        pago["failure_reason"] = None
+    elif body.action == "REJECT":
+        pago["status"] = "REJECTED"
+        pago["failure_reason"] = body.reason or "Fondos insuficientes."
+
+    pago["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return PaymentResponse(**pago)
 
 def _unauthorized_response(correlation_id: Optional[str]) -> JSONResponse:
     body = ErrorResponse(
