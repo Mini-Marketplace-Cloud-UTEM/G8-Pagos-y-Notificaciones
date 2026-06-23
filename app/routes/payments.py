@@ -20,7 +20,12 @@ from app.services.payments_mock import MOCK_PAYMENTS
 # Creamos el router. El prefix nos ahorra escribir /v1/payments en cada ruta.
 router = APIRouter(prefix="/v1/payments", tags=["Payments"])
 
-@router.post("", response_model=PaymentResponse, status_code=201)
+@router.post("", response_model=PaymentResponse, status_code=201, responses={
+    200: {"model": PaymentIdempotentResponse, "description": "Respuesta idempotente."},
+    400: {"model": ErrorResponse, "description": "Datos inválidos o Idempotency-Key ausente."},
+    401: {"model": ErrorResponse, "description": "No autenticado."},
+    422: {"model": ErrorResponse, "description": "Pago no procesable."},
+})
 def create_payment(
     request: CreatePaymentRequest,
     idempotency_key: str = Header(..., alias="Idempotency-Key", example="11111111-2222-4333-8444-555555555555"),
@@ -32,22 +37,31 @@ def create_payment(
     """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    return PaymentResponse(
-        payment_id="PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0",
-        order_id=request.order_id,
-        user_id=request.user_id,
-        amount=request.amount,
-        currency=request.currency,
-        method=request.method,
-        status="APPROVED",
-        idempotency_key=idempotency_key,
-        correlation_id=correlation_id,
-        failure_reason=None,
-        created_at=now,
-        updated_at=now
-    )
+    new_payment = {
+        "payment_id": "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0",
+        "order_id": request.order_id,
+        "user_id": request.user_id,
+        "amount": request.amount,
+        "currency": request.currency,
+        "method": request.method,
+        "status": "APPROVED",
+        "idempotency_key": idempotency_key,
+        "correlation_id": correlation_id,
+        "failure_reason": None,
+        "created_at": now,
+        "updated_at": now
+    }
+    
+    MOCK_PAYMENTS.append(new_payment)
+    
+    return PaymentResponse.model_validate(new_payment)
 
-@router.patch("/{payment_id}/confirm")
+@router.patch("/{payment_id}/confirm", responses={
+    200: {"model": PaymentResponse, "description": "Pago confirmado o idempotente."},
+    400: {"model": ErrorResponse, "description": "Acción inválida o estado incorrecto."},
+    401: {"model": ErrorResponse, "description": "No autenticado."},
+    404: {"model": ErrorResponse, "description": "Pago no encontrado."},
+})
 def confirm_payment(
     payment_id: str, 
     body: ConfirmPaymentRequest,
@@ -98,7 +112,7 @@ def confirm_payment(
 
     pago["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    return PaymentResponse(**pago)
+    return PaymentResponse.model_validate(pago)
 
 def _unauthorized_response(correlation_id: Optional[str]) -> JSONResponse:
     body = ErrorResponse(
@@ -108,7 +122,11 @@ def _unauthorized_response(correlation_id: Optional[str]) -> JSONResponse:
     )
     return JSONResponse(status_code=401, content=body.model_dump(by_alias=True))
 
-@router.get("/{payment_id}", response_model=PaymentResponse)
+@router.get("/{payment_id}", response_model=PaymentResponse, responses={
+    401: {"model": ErrorResponse, "description": "No autenticado."},
+    403: {"model": ErrorResponse, "description": "Sin permisos."},
+    404: {"model": ErrorResponse, "description": "Pago no encontrado."},
+})
 def get_payment_by_id(
     payment_id: str,
     authorization: Optional[str] = Header(
@@ -133,9 +151,13 @@ def get_payment_by_id(
         )
         return JSONResponse(status_code=404, content=body.model_dump(by_alias=True))
 
-    return PaymentResponse(**record)
+    return PaymentResponse.model_validate(record)
 
-@router.get("", response_model=PaymentListResponse)
+@router.get("", response_model=PaymentListResponse, responses={
+    400: {"model": ErrorResponse, "description": "orderId ausente o inválido."},
+    401: {"model": ErrorResponse, "description": "No autenticado."},
+    404: {"model": ErrorResponse, "description": "Pago no encontrado."},
+})
 def list_payments_by_order(
     order_id: Optional[str] = Query(None, alias="orderId"),
     page: int = Query(1, ge=1),
@@ -174,7 +196,7 @@ def list_payments_by_order(
     total_pages = math.ceil(total / page_size) if total > 0 else 1
     start = (page - 1) * page_size
     end = start + page_size
-    items = [PaymentResponse(**p) for p in filtered[start:end]]
+    items = [PaymentResponse.model_validate(p) for p in filtered[start:end]]
 
     pagination = PaginationResponse(
         page=page,
