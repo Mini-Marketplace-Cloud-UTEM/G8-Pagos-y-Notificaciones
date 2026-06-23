@@ -8,6 +8,9 @@ class CreatePaymentRequest(BaseModel):
     currency: str = Field(example="CLP")
     method: str = Field(example="MERCADOPAGO")
 
+    class Config:
+        populate_by_name = True
+
 class PaymentResponse(BaseModel):
     payment_id: str = Field(alias="paymentId")
     order_id: str = Field(alias="orderId")
@@ -24,3 +27,4 @@ class PaymentResponse(BaseModel):
 
     class Config:
         populate_by_name = True
+        by_alias = True
