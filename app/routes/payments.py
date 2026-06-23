@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from typing import Optional, List
 from datetime import datetime, timezone
 from app.schemas.payments import CreatePaymentRequest, PaymentResponse
+from pydantic import BaseModel
 
 # Importamos los modelos desde nuestra nueva carpeta schemas
 from app.schemas.payments import (
