@@ -564,8 +564,9 @@ components:
           example: "e9d8c7b6-a543-2109-8765-fedcba098765"
         amount:
           type: integer
+          format: int64
           minimum: 1
-          description: Monto a cobrar en CLP, sin decimales. Debe ser mayor a cero.
+          description: Monto a cobrar en CLP, sin decimales. Debe ser mayor a cero. Equivale a LONG en Java/otros lenguajes.
           example: 59990
         currency:
           type: string
@@ -608,7 +609,8 @@ components:
           example: "e9d8c7b6-a543-2109-8765-fedcba098765"
         amount:
           type: integer
-          description: Monto del pago en CLP, sin decimales.
+          format: int64
+          description: Monto del pago en CLP, sin decimales. Equivale a LONG en Java/otros lenguajes.
           example: 59990
         currency:
           type: string
