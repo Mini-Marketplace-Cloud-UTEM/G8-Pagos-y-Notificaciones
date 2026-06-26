@@ -73,7 +73,7 @@ def list_notifications(
 ):
     """
     Lista las notificaciones de un usuario desde Supabase, con paginación real.
-    Si el usuario no tiene notificaciones, devuelve 200 con una lista vacía.
+    Si el usuario no tiene notificaciones, devuelve 404 USER_NOT_FOUND (según contrato).
     """
     if not user_id:
         return _error(400, "MISSING_USER_ID", "El parámetro userId es obligatorio.")
@@ -96,7 +96,16 @@ def list_notifications(
 
     rows = resp.data or []
     total = resp.count or 0
-    total_pages = math.ceil(total / page_size) if total > 0 else 0
+
+    # 404 — el contrato define USER_NOT_FOUND cuando el usuario no tiene notificaciones.
+    if total == 0:
+        return _error(
+            404,
+            "USER_NOT_FOUND",
+            "No se encontraron notificaciones para el userId indicado.",
+        )
+
+    total_pages = math.ceil(total / page_size)
 
     notifications = [Notification(**row) for row in rows]
     pagination = Pagination(
