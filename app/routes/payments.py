@@ -4,7 +4,8 @@ from fastapi.responses import JSONResponse
 from typing import Optional, List
 from datetime import datetime, timezone
 from pydantic import BaseModel
-
+from app.services.payment_service import payment_service
+from app.database.supabase_client import supabase
 # Importamos los modelos desde nuestra nueva carpeta schemas
 from app.schemas.payments import (
     CreatePaymentRequest,
@@ -32,9 +33,43 @@ def create_payment(
     correlation_id: Optional[str] = Header(None, alias="X-Correlation-Id", example="99999999-8888-4777-9666-555555555555"),
     authorization: Optional[str] = Header(None)
 ):
-    """
-    Mock del endpoint para iniciar un pago.
-    """
+        try:
+        # Verificar idempotencia primero
+        existing_payment = supabase.table("payments") \
+            .select("*") \
+            .eq("idempotency_key", idempotency_key) \
+            .execute()
+        
+        if existing_payment.data and len(existing_payment.data) > 0:
+            # Ya existe, retornar respuesta idempotente
+            existing = existing_payment.data[0]
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "paymentId": existing["payment_id"],
+                    "status": existing["status"],
+                    "idempotent": True,
+                    "message": "Pago ya existe. No se creó uno nuevo."
+                }
+            )
+        
+        # Crear nuevo pago usando el servicio
+        new_payment = payment_service.create_payment(
+            request=request,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id
+        )
+        
+        return PaymentResponse.model_validate(new_payment)
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "PAYMENT_CREATION_ERROR",
+                "message": f"Error al crear el pago: {str(e)}"
+            }
+        )
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     new_payment = {
