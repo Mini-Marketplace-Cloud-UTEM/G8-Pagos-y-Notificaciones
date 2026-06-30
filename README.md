@@ -93,7 +93,7 @@ Nicolás Céspedes · Diego Vásquez · Camilo Arteaga · Walter Olarte
 | Grupo 5 — Pedidos | Inicia pagos vía `POST /v1/payments` |
 | Grupo 6 — Despacho | Publica el evento `ShipmentDelivered` que consumimos |
 | Grupo 1 — Frontend | Consume `GET /v1/notifications` |
-| Grupo 10 — Reportería | Consume nuestros eventos de pago para reportes |
+| Grupo 7 — Reportería | Consume nuestros eventos de pago para reportes |
 
 ## Estado del proyecto
 
