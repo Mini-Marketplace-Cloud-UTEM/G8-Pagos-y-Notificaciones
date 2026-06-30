@@ -3,6 +3,8 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from typing import Optional
 from datetime import datetime, timezone
+from app.database.supabase_client import supabase
+from app.services.payment_service import payment_service
 
 # Importamos los modelos desde nuestra nueva carpeta schemas
 from app.schemas.payments import (
