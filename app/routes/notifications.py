@@ -1,8 +1,12 @@
-from fastapi import APIRouter, Header, Query, Response, HTTPException
-from typing import Optional
+import math
+import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
-# Importamos los modelos desde la carpeta schemas
+from fastapi import APIRouter, Header, Query, Response
+from fastapi.responses import JSONResponse
+
+from app.db import get_supabase
 from app.schemas.notifications import (
     TestNotificationRequest,
     Notification,
@@ -14,6 +18,9 @@ from app.schemas.notifications import (
 # El prefix nos ahorra escribir /v1/notifications en cada ruta.
 router = APIRouter(prefix="/v1/notifications", tags=["Notifications"])
 
+# Nombre de la tabla en Supabase.
+TABLE = "notifications"
+
 # Tipos de evento soportados (según el contrato G8_Contratos.yaml).
 SUPPORTED_EVENT_TYPES = [
     "ORDER_CREATED",
@@ -24,7 +31,7 @@ SUPPORTED_EVENT_TYPES = [
     "STOCK_REJECTED",
 ]
 
-# Plantillas mock de título y cuerpo por tipo de evento.
+# Plantillas de título y cuerpo por tipo de evento.
 # El {orderId} se reemplaza con el dato que venga en el payload del evento.
 NOTIFICATION_TEMPLATES = {
     "ORDER_CREATED": ("Pedido creado", "Tu pedido {orderId} fue creado correctamente."),
@@ -35,10 +42,19 @@ NOTIFICATION_TEMPLATES = {
     "STOCK_REJECTED": ("Problema con el stock", "No hay stock suficiente para tu pedido {orderId}."),
 }
 
-# Mock en memoria SOLO para demostrar idempotencia en la fase E2.
-# Mapea eventId -> notificationId ya generado. En E3 esto lo reemplaza
-# el constraint UNIQUE sobre la columna eventId en la base de datos.
-_processed_events: dict = {}
+
+def _error(status: int, code: str, message: str, details=None) -> JSONResponse:
+    """Construye una respuesta de error con el formato estándar del contrato."""
+    body = {"code": code, "message": message}
+    if details is not None:
+        body["details"] = details
+    return JSONResponse(status_code=status, content=body)
+
+
+def _is_duplicate_error(exc: Exception) -> bool:
+    """True si la excepción corresponde a una violación de UNIQUE (event_id)."""
+    text = str(getattr(exc, "message", "") or "") + str(exc)
+    return "23505" in text or "duplicate key" in text.lower()
 
 
 @router.get(
@@ -56,40 +72,51 @@ def list_notifications(
     authorization: Optional[str] = Header(None),
 ):
     """
-    Mock del listado de notificaciones de un usuario, con paginación.
+    Lista las notificaciones de un usuario desde Supabase, con paginación real.
+    Si el usuario no tiene notificaciones, devuelve 404 USER_NOT_FOUND (según contrato).
     """
     if not user_id:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "MISSING_USER_ID",
-                "message": "El parámetro userId es obligatorio.",
-            },
+        return _error(400, "MISSING_USER_ID", "El parámetro userId es obligatorio.")
+
+    start = (page - 1) * page_size
+    end = start + page_size - 1
+
+    try:
+        resp = (
+            get_supabase()
+            .table(TABLE)
+            .select("*", count="exact")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .range(start, end)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 - error de infraestructura
+        return _error(503, "DATABASE_ERROR", f"No se pudo consultar la base de datos: {exc}")
+
+    rows = resp.data or []
+    total = resp.count or 0
+
+    # 404 — el contrato define USER_NOT_FOUND cuando el usuario no tiene notificaciones.
+    if total == 0:
+        return _error(
+            404,
+            "USER_NOT_FOUND",
+            "No se encontraron notificaciones para el userId indicado.",
         )
 
-    notification = Notification(
-        notification_id="NTF-b2c3d4e5-f6a7-8901-2345-67890abcdef1",
-        user_id=user_id,
-        event_id="evt-550e8400-e29b-41d4-a716-446655440001",
-        event_type="PAYMENT_APPROVED",
-        title="¡Tu pago fue aprobado!",
-        body="El pago de tu pedido ORD-20260611-001 fue procesado exitosamente.",
-        channel="DASHBOARD",
-        status="DELIVERED",
-        created_at="2026-06-15T20:00:02Z",
-    )
+    total_pages = math.ceil(total / page_size)
 
-    return NotificationListResponse(
-        data=[notification],
-        pagination=Pagination(
-            page=page,
-            page_size=page_size,
-            total=1,
-            total_pages=1,
-            has_next=False,
-            has_prev=False,
-        ),
+    notifications = [Notification(**row) for row in rows]
+    pagination = Pagination(
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+        has_next=page < total_pages,
+        has_prev=page > 1,
     )
+    return NotificationListResponse(data=notifications, pagination=pagination)
 
 
 @router.post(
@@ -110,71 +137,85 @@ def test_notification(
     authorization: Optional[str] = Header(None),
 ):
     """
-    Mock del inyector de eventos de prueba. Genera una notificación a partir
-    de un evento en el formato estándar del curso y simula idempotencia:
-    si el mismo eventId llega dos veces, NO se crea una notificación duplicada.
+    Inyecta un evento de prueba y genera una notificación persistida en Supabase.
+    Idempotencia real: la columna event_id tiene constraint UNIQUE, por lo que
+    el mismo eventId nunca crea una notificación duplicada (responde 200).
     """
     # 400 — eventId es la clave de idempotencia, es obligatorio.
     if not event.event_id:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "MISSING_EVENT_ID",
-                "message": "El campo eventId es obligatorio.",
-            },
-        )
+        return _error(400, "MISSING_EVENT_ID", "El campo eventId es obligatorio.")
 
     # 422 — el tipo de evento no genera notificaciones en este servicio.
     if event.event_type not in SUPPORTED_EVENT_TYPES:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "UNSUPPORTED_EVENT_TYPE",
-                "message": "El eventType recibido no genera notificaciones en este servicio.",
-                "details": [
-                    {
-                        "field": "eventType",
-                        "message": (
-                            f"Valor recibido '{event.event_type}' no está soportado. "
-                            f"Valores válidos: {', '.join(SUPPORTED_EVENT_TYPES)}."
-                        ),
-                    }
-                ],
-            },
+        return _error(
+            422,
+            "UNSUPPORTED_EVENT_TYPE",
+            "El eventType recibido no genera notificaciones en este servicio.",
+            details=[{
+                "field": "eventType",
+                "message": (
+                    f"Valor recibido '{event.event_type}' no está soportado. "
+                    f"Valores válidos: {', '.join(SUPPORTED_EVENT_TYPES)}."
+                ),
+            }],
         )
 
-    # 200 — idempotencia: si el eventId ya fue procesado, no duplicamos.
-    if event.event_id in _processed_events:
+    sb = get_supabase()
+
+    # Idempotencia (1ª comprobación): ¿ya existe una notificación con este eventId?
+    try:
+        existing = (
+            sb.table(TABLE).select("notification_id").eq("event_id", event.event_id).limit(1).execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(503, "DATABASE_ERROR", f"No se pudo consultar la base de datos: {exc}")
+
+    if existing.data:
         response.status_code = 200
         return NotificationIdempotentResponse(
-            notification_id=_processed_events[event.event_id],
+            notification_id=existing.data[0]["notification_id"],
             event_id=event.event_id,
             idempotent=True,
             message="Evento ya procesado. No se generó notificación duplicada.",
         )
 
-    # 201 — generamos la notificación mock.
-    notification_id = "NTF-b2c3d4e5-f6a7-8901-2345-67890abcdef1"
-    _processed_events[event.event_id] = notification_id
-
+    # Construimos la notificación a partir del evento.
     payload = event.payload or {}
-    # Grupo 6 (Despacho) envía el payload en snake_case (order_id), por eso
-    # intentamos ambas variantes antes de quedarnos sin dato.
+    # Grupo 6 (Despacho) envía el payload en snake_case (order_id); probamos ambas.
     order_id = payload.get("orderId") or payload.get("order_id") or "tu pedido"
     user_id = payload.get("userId") or payload.get("user_id") or "00000000-0000-0000-0000-000000000000"
-
     title, body_template = NOTIFICATION_TEMPLATES[event.event_type]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    return Notification(
-        notification_id=notification_id,
-        user_id=user_id,
-        event_id=event.event_id,
-        event_type=event.event_type,
-        title=title,
-        body=body_template.format(orderId=order_id),
-        channel="DASHBOARD",
-        status="DELIVERED",
-        payload=payload,
-        created_at=now,
-    )
+    new_row = {
+        "notification_id": "NTF-" + str(uuid.uuid4()),
+        "user_id": user_id,
+        "event_id": event.event_id,
+        "event_type": event.event_type,
+        "title": title,
+        "body": body_template.format(orderId=order_id),
+        "channel": "DASHBOARD",
+        "status": "DELIVERED",
+        "payload": payload,
+    }
+
+    # Insertamos. Si entre la comprobación y el insert llegó el mismo eventId
+    # (condición de carrera), el UNIQUE de la BD lo bloquea y respondemos idempotente.
+    try:
+        result = sb.table(TABLE).insert(new_row).execute()
+    except Exception as exc:  # noqa: BLE001
+        if _is_duplicate_error(exc):
+            again = (
+                sb.table(TABLE).select("notification_id").eq("event_id", event.event_id).limit(1).execute()
+            )
+            notification_id = again.data[0]["notification_id"] if again.data else new_row["notification_id"]
+            response.status_code = 200
+            return NotificationIdempotentResponse(
+                notification_id=notification_id,
+                event_id=event.event_id,
+                idempotent=True,
+                message="Evento ya procesado. No se generó notificación duplicada.",
+            )
+        return _error(503, "DATABASE_ERROR", f"No se pudo guardar la notificación: {exc}")
+
+    created = result.data[0] if result.data else new_row
+    return Notification(**created)
