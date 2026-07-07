@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -14,30 +15,25 @@ router = APIRouter(
 )
 
 
+SUPPORTED_G6_EVENTS = {
+    "SHIPMENT_CREATED",
+    "SHIPMENT_IN_TRANSIT",
+    "SHIPMENT_DELIVERED",
+    "SHIPMENT_CANCELLED",
+    "SHIPMENT_FAILED",
+    "SHIPMENT_RETURNED",
+}
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def decode_pubsub_or_raw_event(body: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Acepta dos formatos:
-
-    1) Evento directo, útil para Postman:
-    {
-      "eventId": "...",
-      "eventType": "SHIPMENT_DELIVERED",
-      "payload": {...}
-    }
-
-    2) Pub/Sub Push:
-    {
-      "message": {
-        "data": "base64-del-json",
-        "messageId": "...",
-        "publishTime": "..."
-      },
-      "subscription": "..."
-    }
+    Acepta:
+    1) Evento directo desde Postman.
+    2) Evento envuelto por GCP Pub/Sub Push.
     """
 
     if "message" in body and isinstance(body["message"], dict):
@@ -54,8 +50,7 @@ def decode_pubsub_or_raw_event(body: Dict[str, Any]) -> Dict[str, Any]:
 
         try:
             decoded = base64.b64decode(message["data"]).decode("utf-8")
-            event = json.loads(decoded)
-            return event
+            return json.loads(decoded)
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -68,10 +63,9 @@ def decode_pubsub_or_raw_event(body: Dict[str, Any]) -> Dict[str, Any]:
     return body
 
 
-def get_payload_value(payload: Dict[str, Any], camel_key: str, snake_key: Optional[str] = None):
+def get_value(payload: Dict[str, Any], camel_key: str, snake_key: Optional[str] = None):
     """
-    Prioriza camelCase porque G6 confirmó payload en camelCase.
-    Acepta snake_case como respaldo para no romper pruebas antiguas.
+    G6 confirmó camelCase, pero dejamos snake_case como respaldo.
     """
     if camel_key in payload:
         return payload.get(camel_key)
@@ -82,7 +76,118 @@ def get_payload_value(payload: Dict[str, Any], camel_key: str, snake_key: Option
     return None
 
 
-def build_shipment_notification(event: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_user_id(payload: Dict[str, Any]) -> str:
+    """
+    G6 actualmente no envía userId en su contrato.
+    Para E4 podemos usar:
+    1. userId si viene en payload.
+    2. G6_DEFAULT_USER_ID desde Render como fallback temporal.
+    """
+
+    user_id = get_value(payload, "userId", "user_id")
+
+    if user_id:
+        return user_id
+
+    default_user_id = os.getenv("G6_DEFAULT_USER_ID")
+
+    if default_user_id:
+        return default_user_id
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "MISSING_USER_ID",
+            "message": (
+                "El evento de G6 no contiene userId. "
+                "Configura G6_DEFAULT_USER_ID en Render o coordina con G6/G5 para resolver userId desde orderId."
+            )
+        }
+    )
+
+
+def build_title_and_body(event_type: str, payload: Dict[str, Any]) -> Dict[str, str]:
+    shipment_id = get_value(payload, "shipmentId", "shipment_id")
+    order_id = get_value(payload, "orderId", "order_id")
+    customer_name = get_value(payload, "customerName", "customer_name")
+    city = get_value(payload, "city")
+    new_status = get_value(payload, "newStatus", "new_status")
+    previous_status = get_value(payload, "previousStatus", "previous_status")
+    package_index = get_value(payload, "packageIndex", "package_index")
+    total_packages = get_value(payload, "totalPackages", "total_packages")
+
+    order_text = order_id or "tu pedido"
+    shipment_text = shipment_id or "tu despacho"
+
+    if event_type == "SHIPMENT_CREATED":
+        return {
+            "title": "Tu despacho fue creado",
+            "body": f"El despacho {shipment_text} del pedido {order_text} fue registrado correctamente."
+        }
+
+    if event_type == "SHIPMENT_IN_TRANSIT":
+        return {
+            "title": "Tu pedido va en camino",
+            "body": f"El despacho {shipment_text} del pedido {order_text} ya está en tránsito."
+        }
+
+    if event_type == "SHIPMENT_DELIVERED":
+        if package_index is not None and total_packages is not None:
+            try:
+                package_index_int = int(package_index)
+                total_packages_int = int(total_packages)
+
+                if package_index_int < total_packages_int:
+                    return {
+                        "title": "Entrega parcial realizada",
+                        "body": (
+                            f"Tu caja {package_index_int} de {total_packages_int} del pedido {order_text} "
+                            f"fue entregada correctamente. El resto sigue en camino."
+                        )
+                    }
+
+                if package_index_int == total_packages_int:
+                    return {
+                        "title": "Pedido completado",
+                        "body": (
+                            f"Tu pedido {order_text} fue entregado completamente. "
+                            f"Última caja recibida: {package_index_int} de {total_packages_int}."
+                        )
+                    }
+
+            except ValueError:
+                pass
+
+        return {
+            "title": "Tu pedido fue entregado",
+            "body": f"El despacho {shipment_text} del pedido {order_text} fue entregado exitosamente."
+        }
+
+    if event_type == "SHIPMENT_CANCELLED":
+        return {
+            "title": "Despacho cancelado",
+            "body": f"El despacho {shipment_text} del pedido {order_text} fue cancelado."
+        }
+
+    if event_type == "SHIPMENT_FAILED":
+        return {
+            "title": "Problema con tu despacho",
+            "body": f"No se pudo completar el despacho {shipment_text} del pedido {order_text}."
+        }
+
+    if event_type == "SHIPMENT_RETURNED":
+        return {
+            "title": "Despacho devuelto",
+            "body": f"El despacho {shipment_text} del pedido {order_text} fue devuelto al centro de distribución."
+        }
+
+    return {
+        "title": "Actualización de despacho",
+        "body": f"El pedido {order_text} tuvo una actualización de estado: {new_status or event_type}."
+    }
+
+
+def build_g6_notification(event: Dict[str, Any]) -> Dict[str, Any]:
     event_id = event.get("eventId")
     event_type = event.get("eventType")
     correlation_id = event.get("correlationId")
@@ -97,12 +202,12 @@ def build_shipment_notification(event: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    if event_type != "SHIPMENT_DELIVERED":
+    if event_type not in SUPPORTED_G6_EVENTS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "code": "UNSUPPORTED_EVENT_TYPE",
-                "message": "Este endpoint solo procesa eventos SHIPMENT_DELIVERED desde G6.",
+                "message": "El eventType recibido no está soportado para eventos G6.",
                 "details": [
                     {
                         "field": "eventType",
@@ -113,9 +218,8 @@ def build_shipment_notification(event: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    shipment_id = get_payload_value(payload, "shipmentId", "shipment_id")
-    order_id = get_payload_value(payload, "orderId", "order_id")
-    user_id = get_payload_value(payload, "userId", "user_id")
+    shipment_id = get_value(payload, "shipmentId", "shipment_id")
+    order_id = get_value(payload, "orderId", "order_id")
 
     missing_fields = []
 
@@ -125,15 +229,12 @@ def build_shipment_notification(event: Dict[str, Any]) -> Dict[str, Any]:
     if not order_id:
         missing_fields.append("payload.orderId")
 
-    if not user_id:
-        missing_fields.append("payload.userId")
-
     if missing_fields:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
-                "code": "INVALID_SHIPMENT_PAYLOAD",
-                "message": "El payload del evento SHIPMENT_DELIVERED no contiene todos los campos requeridos.",
+                "code": "INVALID_G6_PAYLOAD",
+                "message": "El payload del evento G6 no contiene todos los campos requeridos.",
                 "details": [
                     {
                         "field": field,
@@ -145,18 +246,16 @@ def build_shipment_notification(event: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    notification_id = f"NTF-{uuid.uuid4()}"
-
-    title = "Tu pedido fue entregado"
-    body = f"El pedido {order_id} asociado al envío {shipment_id} fue entregado exitosamente."
+    user_id = resolve_user_id(payload)
+    text = build_title_and_body(event_type, payload)
 
     return {
-        "notification_id": notification_id,
+        "notification_id": f"NTF-{uuid.uuid4()}",
         "user_id": user_id,
         "event_id": event_id,
         "event_type": event_type,
-        "title": title,
-        "body": body,
+        "title": text["title"],
+        "body": text["body"],
         "channel": "DASHBOARD",
         "status": "DELIVERED",
         "payload": payload,
@@ -181,15 +280,6 @@ def to_api_response(row: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.post("/pubsub", status_code=status.HTTP_201_CREATED)
 async def receive_g6_pubsub_event(request: Request):
-    """
-    Endpoint de integración con G6.
-
-    Recibe eventos SHIPMENT_DELIVERED publicados por G6.
-    Puede recibir:
-    - JSON directo para pruebas con Postman.
-    - Formato Pub/Sub Push desde GCP.
-    """
-
     try:
         body = await request.json()
     except Exception:
@@ -202,7 +292,6 @@ async def receive_g6_pubsub_event(request: Request):
         )
 
     event = decode_pubsub_or_raw_event(body)
-
     event_id = event.get("eventId")
 
     if not event_id:
@@ -216,7 +305,6 @@ async def receive_g6_pubsub_event(request: Request):
 
     supabase = get_supabase()
 
-    # 1. Idempotencia: si ya existe una notificación con ese event_id, no se duplica.
     try:
         existing_result = (
             supabase
@@ -246,8 +334,7 @@ async def receive_g6_pubsub_event(request: Request):
             }
         )
 
-    # 2. Crear notificación desde el evento de G6.
-    notification = build_shipment_notification(event)
+    notification = build_g6_notification(event)
 
     try:
         insert_result = (
