@@ -2,7 +2,7 @@ openapi: 3.0.0
 
 info:
   title: Grupo 8 - Payment & Notifications API
-  version: "1.1.0"
+  version: "1.2.0"
   description: >
     Contrato REST unificado del Grupo 8.
     Incluye los dominios de Pago Simulado y Notificaciones.
@@ -758,14 +758,20 @@ components:
           type: object
           description: >
             Contenido variable según eventType. Se almacena completo en JSONB.
-            Para ShipmentDelivered (Grupo 6): los campos vienen en snake_case
-            (order_id, customer_name) y el servicio los normaliza internamente.
+            Para ShipmentDelivered (Grupo 6): los campos vienen en camelCase
+            (orderId, shipmentId, userId) y el servicio los procesa directamente.
           example:
-            paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
-            orderId: "ORD-20260611-001"
-            userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-            amount: 59990
-            currency: "CLP"
+            eventId: "evt-shipment-001"
+            eventType: "SHIPMENT_DELIVERED"
+            version: "1.0"
+            occurredAt: "2026-07-07T18:00:00Z"
+            producer: "g6-envios"
+            correlationId: "99999999-8888-4777-9666-555555555555"
+            payload:
+              shipmentId: "SHP-001"
+              orderId: "ORD-001"
+              userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
+              status: "DELIVERED"
 
     Notification:
       type: object
