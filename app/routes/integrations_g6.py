@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from google.cloud import pubsub_v1
 from google.oauth2 import service_account
+from google.api_core.exceptions import DeadlineExceeded
 
 from app.db import get_supabase
 
@@ -434,6 +435,13 @@ async def pull_g6_events_once(max_messages: int = 5):
             },
             timeout=10,
         )
+    except DeadlineExceeded:
+        return {
+            "message": "No había mensajes disponibles en la suscripción dentro del tiempo de espera.",
+            "processedCount": 0,
+            "processed": [],
+            "errors": []
+        }
 
         received_messages = response.received_messages
 
