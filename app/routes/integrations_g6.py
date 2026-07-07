@@ -3,9 +3,12 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, HTTPException, Request, status
+
+from google.cloud import pubsub_v1
+from google.oauth2 import service_account
 
 from app.db import get_supabase
 
@@ -359,3 +362,183 @@ async def receive_g6_pubsub_event(request: Request):
                 "message": f"Error al crear la notificación desde evento G6: {str(exc)}"
             }
         )
+    
+def get_gcp_credentials():
+    raw_json = os.getenv("GCP_SERVICE_ACCOUNT_JSON")
+
+    if not raw_json:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "MISSING_GCP_CREDENTIALS",
+                "message": "Falta configurar GCP_SERVICE_ACCOUNT_JSON en Render."
+            }
+        )
+
+    try:
+        service_account_info = json.loads(raw_json)
+        return service_account.Credentials.from_service_account_info(service_account_info)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "INVALID_GCP_CREDENTIALS",
+                "message": f"No se pudo leer GCP_SERVICE_ACCOUNT_JSON: {str(exc)}"
+            }
+        )
+
+
+def get_pubsub_subscriber():
+    credentials = get_gcp_credentials()
+    return pubsub_v1.SubscriberClient(credentials=credentials)
+
+
+def get_subscription_path(subscriber: pubsub_v1.SubscriberClient) -> str:
+    project_id = os.getenv("GCP_PROJECT_ID")
+    subscription_id = os.getenv("GCP_PUBSUB_SUBSCRIPTION_ID")
+
+    if not project_id or not subscription_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "MISSING_GCP_CONFIG",
+                "message": "Faltan GCP_PROJECT_ID o GCP_PUBSUB_SUBSCRIPTION_ID en Render."
+            }
+        )
+
+    return subscriber.subscription_path(project_id, subscription_id)
+
+
+def decode_pubsub_pull_message(message_data: bytes) -> Dict[str, Any]:
+    try:
+        decoded = message_data.decode("utf-8")
+        return json.loads(decoded)
+    except Exception as exc:
+        raise ValueError(f"No se pudo decodificar el mensaje Pub/Sub como JSON: {str(exc)}")
+
+
+@router.post("/pull-once")
+async def pull_g6_events_once(max_messages: int = 5):
+    subscriber = get_pubsub_subscriber()
+    subscription_path = get_subscription_path(subscriber)
+
+    processed: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    ack_ids: List[str] = []
+
+    try:
+        response = subscriber.pull(
+            request={
+                "subscription": subscription_path,
+                "max_messages": max_messages,
+            },
+            timeout=10,
+        )
+
+        received_messages = response.received_messages
+
+        if not received_messages:
+            return {
+                "message": "No había mensajes disponibles en la suscripción.",
+                "processedCount": 0,
+                "processed": [],
+                "errors": []
+            }
+
+        for received_message in received_messages:
+            ack_id = received_message.ack_id
+            pubsub_message = received_message.message
+
+            try:
+                event = decode_pubsub_pull_message(pubsub_message.data)
+                event_id = event.get("eventId")
+
+                if not event_id:
+                    raise ValueError("El evento no contiene eventId.")
+
+                supabase = get_supabase()
+
+                existing_result = (
+                    supabase
+                    .table("notifications")
+                    .select("*")
+                    .eq("event_id", event_id)
+                    .execute()
+                )
+
+                existing_data = existing_result.data or []
+
+                if existing_data:
+                    existing = existing_data[0]
+                    processed.append({
+                        "eventId": event_id,
+                        "status": "IDEMPOTENT",
+                        "notificationId": existing.get("notification_id"),
+                        "message": "Evento ya procesado. No se creó duplicado."
+                    })
+                    ack_ids.append(ack_id)
+                    continue
+
+                notification = build_g6_notification(event)
+
+                insert_result = (
+                    supabase
+                    .table("notifications")
+                    .insert(notification)
+                    .execute()
+                )
+
+                inserted_data = insert_result.data or []
+
+                if not inserted_data:
+                    raise ValueError("Supabase no retornó la notificación creada.")
+
+                inserted = inserted_data[0]
+
+                processed.append({
+                    "eventId": event_id,
+                    "status": "CREATED",
+                    "notificationId": inserted.get("notification_id"),
+                    "eventType": inserted.get("event_type"),
+                    "title": inserted.get("title")
+                })
+
+                ack_ids.append(ack_id)
+
+            except Exception as exc:
+                errors.append({
+                    "messageId": pubsub_message.message_id,
+                    "error": str(exc)
+                })
+
+        if ack_ids:
+            subscriber.acknowledge(
+                request={
+                    "subscription": subscription_path,
+                    "ack_ids": ack_ids,
+                }
+            )
+
+        return {
+            "subscription": subscription_path,
+            "receivedCount": len(received_messages),
+            "processedCount": len(processed),
+            "ackedCount": len(ack_ids),
+            "processed": processed,
+            "errors": errors
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "PUBSUB_PULL_ERROR",
+                "message": f"No se pudieron consumir eventos desde Pub/Sub: {str(exc)}"
+            }
+        )
+
+    finally:
+        subscriber.close()
