@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.db import get_supabase_client
+from app.db import get_supabase
 
 router = APIRouter(
     prefix="/v1/integrations/g6",
@@ -214,7 +214,7 @@ async def receive_g6_pubsub_event(request: Request):
             }
         )
 
-    supabase = get_supabase_client()
+    supabase = get_supabase()
 
     # 1. Idempotencia: si ya existe una notificación con ese event_id, no se duplica.
     try:
