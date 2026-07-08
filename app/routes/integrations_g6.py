@@ -428,27 +428,32 @@ async def pull_g6_events_once(max_messages: int = 5):
     ack_ids: List[str] = []
 
     try:
-        response = subscriber.pull(
-            request={
-                "subscription": subscription_path,
-                "max_messages": max_messages,
-            },
-            timeout=10,
-        )
-    except DeadlineExceeded:
-        return {
-            "message": "No había mensajes disponibles en la suscripción dentro del tiempo de espera.",
-            "processedCount": 0,
-            "processed": [],
-            "errors": []
-        }
+        try:
+            response = subscriber.pull(
+                request={
+                    "subscription": subscription_path,
+                    "max_messages": max_messages,
+                },
+                timeout=10,
+            )
+        except DeadlineExceeded:
+            return {
+                "message": "No había mensajes disponibles en la suscripción dentro del tiempo de espera.",
+                "receivedCount": 0,
+                "processedCount": 0,
+                "ackedCount": 0,
+                "processed": [],
+                "errors": []
+            }
 
         received_messages = response.received_messages
 
         if not received_messages:
             return {
                 "message": "No había mensajes disponibles en la suscripción.",
+                "receivedCount": 0,
                 "processedCount": 0,
+                "ackedCount": 0,
                 "processed": [],
                 "errors": []
             }
