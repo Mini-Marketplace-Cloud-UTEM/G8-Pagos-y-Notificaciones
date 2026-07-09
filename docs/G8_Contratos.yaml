@@ -2,7 +2,7 @@ openapi: 3.0.0
 
 info:
   title: Grupo 8 - Payment & Notifications API
-  version: "1.2.0"
+  version: "1.3.0"
   description: >
     Contrato REST unificado del Grupo 8.
     Incluye los dominios de Pago Simulado y Notificaciones.
@@ -37,11 +37,18 @@ paths:
         - Payments
       summary: Iniciar pago
       description: >
-        Recibe una solicitud de pago desde el servicio de Pedidos (Grupo 5)
+        Recibe una solicitud de pago desde el servicio de Checkout (Grupo 4),
+        usando el orderId generado previamente por el servicio de Pedidos (Grupo 5),
         y simula un resultado: APPROVED, REJECTED o PENDING.
         Esta operación es idempotente: si se recibe un idempotencyKey ya
         procesado, se retorna el resultado original sin reprocesar ni
         emitir un nuevo evento.
+      get:
+        tags:
+          - Payments
+        summary: Listar pagos por pedido
+        description: >
+          Retorna todos los pagos asociados a un orderId.
       operationId: createPayment
       parameters:
         - $ref: "#/components/parameters/AuthorizationHeader"
@@ -167,7 +174,7 @@ paths:
       summary: Listar pagos por pedido
       description: >
         Retorna todos los pagos asociados a un orderId, con soporte de
-        paginación. Útil para que el Grupo 5 consulte el historial de
+        paginación. Útil para que el Grupo 5 o Grupo 4 consulte el historial de
         intentos de pago de un pedido.
       operationId: listPaymentsByOrder
       parameters:
@@ -995,3 +1002,16 @@ components:
           example:
             code: "UNPROCESSABLE_PAYMENT"
             message: "El pago no pudo ser procesado. Verifique los datos enviados."
+
+------------------------------------------------------------------------------------------
+
+Flujo actualizado de integración:
+
+1. G4 Checkout recopila carrito, total, dirección y método de pago.
+2. G4 solicita a G5 crear el pedido.
+3. G5 crea el pedido con estado PENDING_PAYMENT y retorna orderId.
+4. G4 llama a G8 mediante POST /v1/payments usando ese orderId.
+5. G8 simula el pago y retorna APPROVED, REJECTED o PENDING.
+6. G8 publica el evento PAYMENT_APPROVED, PAYMENT_REJECTED o PAYMENT_PENDING.
+7. G5 consume el evento y actualiza el estado del pedido.
+8. G8 Notificaciones genera la notificación correspondiente.
