@@ -1,10 +1,11 @@
 import math
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 from app.database.supabase_client import supabase
 from app.services.payment_service import payment_service
+from app.services.mercadopago_service import mercadopago_service
 
 # Importamos los modelos desde nuestra nueva carpeta schemas
 from app.schemas.payments import (
@@ -54,47 +55,54 @@ def create_payment(
     authorization: Optional[str] = Header(None)
 ):
     """
-    Crea un pago nuevo en Supabase.
+    Crea un pago nuevo en Supabase y una preferencia de pago en Mercado Pago.
     Verifica idempotencia antes de crear.
     Responsabilidad: Compañero 1.
     """
     try:
-        # Verificar idempotencia: si ya existe un pago con ese idempotency_key, no crear otro
-        existing_payment = (
-            supabase.table("payments")
-            .select("*")
-            .eq("idempotency_key", idempotency_key)
-            .execute()
+        payment = payment_service.create_payment(
+            request=request,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
         )
 
-        if existing_payment.data and len(existing_payment.data) > 0:
-            existing = existing_payment.data[0]
+        if payment.get("_idempotent"):
             return JSONResponse(
                 status_code=200,
                 content={
-                    "paymentId": existing["payment_id"],
-                    "status": existing["status"],
+                    "paymentId": payment["payment_id"],
+                    "status": payment["status"],
                     "idempotent": True,
-                    "message": "Pago ya existe. No se creó uno nuevo."
-                }
+                    "checkoutUrl": payment.get("checkout_url"),
+                    "message": "Pago ya iniciado con este idempotencyKey.",
+                },
             )
 
-        # Crear nuevo pago usando el servicio
-        new_payment = payment_service.create_payment(
-            request=request,
-            idempotency_key=idempotency_key,
-            correlation_id=correlation_id
+        return PaymentResponse.model_validate(payment)
+
+    except ValueError as exc:
+        code = str(exc)
+
+        messages = {
+            "INVALID_CURRENCY": "Solo se acepta CLP en la versión actual del servicio.",
+            "INVALID_PAYMENT_METHOD": "En la versión actual solo se acepta MERCADOPAGO.",
+        }
+
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": code,
+                "message": messages.get(code, "Datos inválidos para crear el pago."),
+            },
         )
 
-        return PaymentResponse.model_validate(new_payment)
-
-    except Exception as e:
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail={
                 "code": "PAYMENT_CREATION_ERROR",
-                "message": f"Error al crear el pago: {str(e)}"
-            }
+                "message": f"Error al crear el pago: {str(exc)}",
+            },
         )
 
 
@@ -322,3 +330,93 @@ def confirm_payment(
 
     # Devolvemos el pago con el estado actualizado
     return PaymentResponse.model_validate(update_result.data[0])
+
+def _map_mercadopago_status(provider_status: Optional[str]) -> str:
+    if provider_status == "approved":
+        return "APPROVED"
+
+    if provider_status in ["rejected", "cancelled"]:
+        return "REJECTED"
+
+    return "PENDING"
+
+
+@router.post("/webhooks/mercadopago")
+def receive_mercadopago_webhook(payload: Dict[str, Any]):
+    """
+    Recibe notificaciones de Mercado Pago.
+    Consulta el pago real en Mercado Pago y actualiza el estado interno en Supabase.
+    """
+
+    data = payload.get("data") or {}
+    provider_payment_id = data.get("id")
+
+    if not provider_payment_id:
+        return {
+            "received": True,
+            "message": "Webhook recibido, pero no contenía data.id.",
+        }
+
+    try:
+        mp_payment = mercadopago_service.get_payment(str(provider_payment_id))
+
+        payment_id = mp_payment.get("external_reference")
+        provider_status = mp_payment.get("status")
+        internal_status = _map_mercadopago_status(provider_status)
+
+        if not payment_id:
+            return {
+                "received": True,
+                "providerPaymentId": str(provider_payment_id),
+                "message": "Mercado Pago no retornó external_reference para asociar el pago.",
+            }
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        update_payload = {
+            "provider_payment_id": str(provider_payment_id),
+            "provider_status": provider_status,
+            "status": internal_status,
+            "updated_at": now,
+        }
+
+        if internal_status == "APPROVED":
+            update_payload["confirmed_at"] = now
+            update_payload["failure_reason"] = None
+
+        if internal_status == "REJECTED":
+            update_payload["rejected_at"] = now
+            update_payload["failure_reason"] = mp_payment.get("status_detail") or "Pago rechazado por Mercado Pago."
+
+        update_result = (
+            supabase.table("payments")
+            .update(update_payload)
+            .eq("payment_id", payment_id)
+            .execute()
+        )
+
+        if not update_result.data:
+            return {
+                "received": True,
+                "providerPaymentId": str(provider_payment_id),
+                "paymentId": payment_id,
+                "message": "Webhook recibido, pero no se encontró el pago en Supabase.",
+            }
+
+        return {
+            "received": True,
+            "paymentId": payment_id,
+            "providerPaymentId": str(provider_payment_id),
+            "providerStatus": provider_status,
+            "status": internal_status,
+            "message": "Webhook procesado correctamente.",
+        }
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "MERCADOPAGO_WEBHOOK_ERROR",
+                "message": f"No se pudo procesar el webhook de Mercado Pago: {str(exc)}",
+            },
+        )
