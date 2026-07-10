@@ -1,5 +1,5 @@
 import math
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
@@ -340,21 +340,48 @@ def _map_mercadopago_status(provider_status: Optional[str]) -> str:
 
     return "PENDING"
 
-
 @router.post("/webhooks/mercadopago")
-def receive_mercadopago_webhook(payload: Dict[str, Any]):
+async def receive_mercadopago_webhook(request: Request):
     """
     Recibe notificaciones de Mercado Pago.
-    Consulta el pago real en Mercado Pago y actualiza el estado interno en Supabase.
+
+    Soporta:
+    - Webhook real con body JSON.
+    - Simulación de Mercado Pago con query params tipo data.id=123456&type=payment.
     """
 
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    query_params = request.query_params
+
     data = payload.get("data") or {}
-    provider_payment_id = data.get("id")
+
+    provider_payment_id = (
+        data.get("id")
+        or query_params.get("data.id")
+        or query_params.get("id")
+    )
+
+    event_type = payload.get("type") or query_params.get("type")
 
     if not provider_payment_id:
         return {
             "received": True,
+            "processed": False,
             "message": "Webhook recibido, pero no contenía data.id.",
+        }
+
+    if str(provider_payment_id) == "123456":
+        return {
+            "received": True,
+            "processed": False,
+            "test": True,
+            "eventType": event_type,
+            "providerPaymentId": str(provider_payment_id),
+            "message": "Notificación de prueba recibida correctamente. No se actualizó ningún pago real.",
         }
 
     try:
@@ -367,6 +394,7 @@ def receive_mercadopago_webhook(payload: Dict[str, Any]):
         if not payment_id:
             return {
                 "received": True,
+                "processed": False,
                 "providerPaymentId": str(provider_payment_id),
                 "message": "Mercado Pago no retornó external_reference para asociar el pago.",
             }
@@ -386,7 +414,10 @@ def receive_mercadopago_webhook(payload: Dict[str, Any]):
 
         if internal_status == "REJECTED":
             update_payload["rejected_at"] = now
-            update_payload["failure_reason"] = mp_payment.get("status_detail") or "Pago rechazado por Mercado Pago."
+            update_payload["failure_reason"] = (
+                mp_payment.get("status_detail")
+                or "Pago rechazado por Mercado Pago."
+            )
 
         update_result = (
             supabase.table("payments")
@@ -398,6 +429,7 @@ def receive_mercadopago_webhook(payload: Dict[str, Any]):
         if not update_result.data:
             return {
                 "received": True,
+                "processed": False,
                 "providerPaymentId": str(provider_payment_id),
                 "paymentId": payment_id,
                 "message": "Webhook recibido, pero no se encontró el pago en Supabase.",
@@ -405,6 +437,7 @@ def receive_mercadopago_webhook(payload: Dict[str, Any]):
 
         return {
             "received": True,
+            "processed": True,
             "paymentId": payment_id,
             "providerPaymentId": str(provider_payment_id),
             "providerStatus": provider_status,
@@ -413,10 +446,21 @@ def receive_mercadopago_webhook(payload: Dict[str, Any]):
         }
 
     except Exception as exc:
+        error_text = str(exc)
+
+        if "404" in error_text or "not_found" in error_text.lower() or "not found" in error_text.lower():
+            return {
+                "received": True,
+                "processed": False,
+                "providerPaymentId": str(provider_payment_id),
+                "message": "Webhook recibido, pero el pago no existe en Mercado Pago. Probablemente es una simulación.",
+                "error": error_text,
+            }
+
         raise HTTPException(
             status_code=500,
             detail={
                 "code": "MERCADOPAGO_WEBHOOK_ERROR",
-                "message": f"No se pudo procesar el webhook de Mercado Pago: {str(exc)}",
+                "message": f"No se pudo procesar el webhook de Mercado Pago: {error_text}",
             },
         )
