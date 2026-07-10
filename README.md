@@ -97,4 +97,6 @@ Nicolás Céspedes · Diego Vásquez · Camilo Arteaga · Walter Olarte
 
 ## Estado del proyecto
 
-🚧 En desarrollo — Fase E3 (Cloud y persistencia de datos) del proyecto integrado.
+🚧 En desarrollo — Fase E5 (Final) en curso.
+
+URL Render: https://g8-pagos-y-notificaciones.onrender.com/docs
