@@ -2,16 +2,21 @@ openapi: 3.0.0
 
 info:
   title: Grupo 8 - Payment & Notifications API
-  version: "1.3.0"
+  version: "1.4.0"
   description: >
     Contrato REST unificado del Grupo 8.
-    Incluye los dominios de Pago Simulado y Notificaciones.
+
+    Incluye los dominios de Pagos con Mercado Pago en ambiente de prueba y Notificaciones.
+
     El servicio garantiza idempotencia tanto en pagos (via idempotencyKey)
+
     como en notificaciones (via eventId con constraint UNIQUE en base de datos).
-    Versión 1.1.0: alineado con las decisiones ejecutivas del 2026-06-19
-    (matriz-conflictos-contratos.md, marketplace-contracts) — campo de
-    error renombrado a `code`, dinero como `integer`, y paginación
-    extendida a {page, pageSize, total, totalPages, hasNext, hasPrev}.
+
+    Versión 1.4.0: actualiza el contrato para que el flujo de pago sea orquestado por
+
+    Grupo 4 Checkout, integre Mercado Pago en ambiente de prueba y mantenga a Grupo 5
+
+    como dueño del pedido y consumidor de eventos de resultado de pago.
 
 servers:
   - url: https://api.marketplace.example.com
@@ -21,7 +26,7 @@ servers:
 
 tags:
   - name: Payments
-    description: Operaciones asociadas al pago simulado.
+    description: Operaciones asociadas a pagos mediante Mercado Pago en ambiente de prueba.
   - name: Notifications
     description: Operaciones asociadas a la gestión de notificaciones.
 
@@ -35,20 +40,15 @@ paths:
     post:
       tags:
         - Payments
-      summary: Iniciar pago
+      summary: Iniciar pago con Mercado Pago
       description: >
         Recibe una solicitud de pago desde el servicio de Checkout (Grupo 4),
-        usando el orderId generado previamente por el servicio de Pedidos (Grupo 5),
-        y simula un resultado: APPROVED, REJECTED o PENDING.
-        Esta operación es idempotente: si se recibe un idempotencyKey ya
-        procesado, se retorna el resultado original sin reprocesar ni
-        emitir un nuevo evento.
-      get:
-        tags:
-          - Payments
-        summary: Listar pagos por pedido
-        description: >
-          Retorna todos los pagos asociados a un orderId.
+        usando el orderId generado previamente por el servicio de Pedidos (Grupo 5).
+        El servicio crea una preferencia de pago en Mercado Pago usando credenciales
+        de prueba/sandbox y retorna la información necesaria para continuar el flujo
+        de pago, como el checkoutUrl.
+        Esta operación es idempotente: si se recibe un idempotencyKey ya procesado,
+        se retorna el resultado original sin reprocesar ni emitir un nuevo evento.
       operationId: createPayment
       parameters:
         - $ref: "#/components/parameters/AuthorizationHeader"
@@ -68,7 +68,7 @@ paths:
               method: "MERCADOPAGO"
       responses:
         "201":
-          description: Pago iniciado y simulado correctamente.
+          description: Preferencia de pago creada correctamente en Mercado Pago.
           content:
             application/json:
               schema:
@@ -80,15 +80,20 @@ paths:
                 amount: 59990
                 currency: "CLP"
                 method: "MERCADOPAGO"
-                status: "APPROVED"
+                status: "PENDING"
+                provider: "MERCADOPAGO"
+                providerPreferenceId: "123456789-abcd-efgh"
+                providerPaymentId:
+                checkoutUrl: "https://www.mercadopago.cl/checkout/v1/redirect?pref_id=123456789-abcd-efgh"
+                providerStatus: "created"
                 idempotencyKey: "11111111-2222-4333-8444-555555555555"
                 correlationId: "99999999-8888-4777-9666-555555555555"
-                failureReason: null
+                failureReason:
                 createdAt: "2026-06-15T20:00:00Z"
                 updatedAt: "2026-06-15T20:00:01Z"
         "200":
           description: >
-            Pago ya procesado anteriormente (respuesta idempotente).
+            Pago ya iniciado anteriormente con el mismo idempotencyKey.
             Se retorna el resultado original sin reprocesar.
           content:
             application/json:
@@ -96,9 +101,10 @@ paths:
                 $ref: "#/components/schemas/PaymentIdempotentResponse"
               example:
                 paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
-                status: "APPROVED"
+                status: "PENDING"
                 idempotent: true
-                message: "Pago ya procesado con este idempotencyKey."
+                checkoutUrl: "https://www.mercadopago.cl/checkout/v1/redirect?pref_id=123456789-abcd-efgh"
+                message: "Pago ya iniciado con este idempotencyKey."
         "400":
           description: Datos inválidos o Idempotency-Key ausente.
           content:
@@ -122,6 +128,87 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/UnprocessablePayment"
+
+    get:
+      tags:
+        - Payments
+      summary: Listar pagos por pedido
+      description: >
+        Retorna todos los pagos asociados a un orderId, con soporte de
+        paginación. Útil para que Grupo 4 o Grupo 5 consulten el historial de
+        intentos de pago asociados a un pedido.
+      operationId: listPaymentsByOrder
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationHeader"
+        - $ref: "#/components/parameters/CorrelationIdHeader"
+        - name: orderId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: ID del pedido cuyos pagos se quieren consultar.
+          example: "ORD-20260611-001"
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Lista de pagos del pedido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentListResponse"
+              example:
+                data:
+                  - paymentId: PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0
+                    orderId: ORD-20260611-001
+                    userId: e9d8c7b6-a543-2109-8765-fedcba098765
+                    amount: 59990
+                    currency: CLP
+                    method: MERCADOPAGO
+                    provider: MERCADOPAGO
+                    providerPreferenceId: 123456789-abcd-efgh
+                    providerPaymentId: '987654321'
+                    checkoutUrl:
+                    providerStatus: approved
+                    status: APPROVED
+                    idempotencyKey: 11111111-2222-4333-8444-555555555555
+                    correlationId: 99999999-8888-4777-9666-555555555555
+                    failureReason:
+                    createdAt: '2026-06-15T20:00:00Z'
+                    updatedAt: '2026-06-15T20:00:01Z'
+                pagination:
+                  page: 1
+                  pageSize: 20
+                  total: 1
+                  totalPages: 1
+                  hasNext: false
+                  hasPrev: false
+        "400":
+          description: orderId ausente o inválido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "MISSING_ORDER_ID"
+                message: "El parámetro orderId es obligatorio."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/PaymentNotFound"
 
   /v1/payments/{paymentId}:
     get:
@@ -154,10 +241,15 @@ paths:
                 amount: 59990
                 currency: "CLP"
                 method: "MERCADOPAGO"
+                provider: "MERCADOPAGO"
+                providerPreferenceId: "123456789-abcd-efgh"
+                providerPaymentId: "987654321"
+                checkoutUrl:
+                providerStatus: "approved"
                 status: "APPROVED"
                 idempotencyKey: "11111111-2222-4333-8444-555555555555"
                 correlationId: "99999999-8888-4777-9666-555555555555"
-                failureReason: null
+                failureReason:
                 createdAt: "2026-06-15T20:00:00Z"
                 updatedAt: "2026-06-15T20:00:01Z"
         "401":
@@ -167,92 +259,15 @@ paths:
         "404":
           $ref: "#/components/responses/PaymentNotFound"
 
-  /v1/payments:
-    get:
-      tags:
-        - Payments
-      summary: Listar pagos por pedido
-      description: >
-        Retorna todos los pagos asociados a un orderId, con soporte de
-        paginación. Útil para que el Grupo 5 o Grupo 4 consulte el historial de
-        intentos de pago de un pedido.
-      operationId: listPaymentsByOrder
-      parameters:
-        - $ref: "#/components/parameters/AuthorizationHeader"
-        - $ref: "#/components/parameters/CorrelationIdHeader"
-        - name: orderId
-          in: query
-          required: true
-          schema:
-            type: string
-          description: ID del pedido cuyos pagos se quieren consultar.
-          example: "ORD-20260611-001"
-        - name: page
-          in: query
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-          description: Número de página (base 1).
-        - name: pageSize
-          in: query
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-          description: Cantidad de resultados por página.
-      responses:
-        "200":
-          description: Lista de pagos del pedido.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PaymentListResponse"
-              example:
-                data:
-                  - paymentId: "PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0"
-                    orderId: "ORD-20260611-001"
-                    userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-                    amount: 59990
-                    currency: "CLP"
-                    method: "MERCADOPAGO"
-                    status: "APPROVED"
-                    idempotencyKey: "11111111-2222-4333-8444-555555555555"
-                    correlationId: "99999999-8888-4777-9666-555555555555"
-                    failureReason: null
-                    createdAt: "2026-06-15T20:00:00Z"
-                    updatedAt: "2026-06-15T20:00:01Z"
-                pagination:
-                  page: 1
-                  pageSize: 20
-                  total: 1
-                  totalPages: 1
-                  hasNext: false
-                  hasPrev: false
-        "400":
-          description: orderId ausente o inválido.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                code: "MISSING_ORDER_ID"
-                message: "El parámetro orderId es obligatorio."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/PaymentNotFound"
-
   /v1/payments/{paymentId}/confirm:
     patch:
       tags:
         - Payments
       summary: Confirmar o rechazar un pago
       description: >
-        Confirma o rechaza manualmente un pago en estado PENDING.
+        Confirma o rechaza manualmente un pago en estado PENDING solo para pruebas internas
+        o fallback académico. En el flujo principal con Mercado Pago, la actualización del
+        estado debe realizarse mediante el webhook de Mercado Pago.
         Esta operación es idempotente: si el pago ya se encuentra en
         estado APPROVED o REJECTED, se retorna 200 con idempotent: true
         sin reprocesar ni emitir un nuevo evento al bus.
@@ -276,7 +291,7 @@ paths:
               $ref: "#/components/schemas/ConfirmPaymentRequest"
             example:
               action: "APPROVE"
-              reason: null
+              reason:
       responses:
         "200":
           description: >
@@ -285,7 +300,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Payment"
+                oneOf:
+                  - $ref: '#/components/schemas/Payment'
+                  - $ref: '#/components/schemas/PaymentIdempotentResponse'
               examples:
                 approved:
                   value:
@@ -295,10 +312,15 @@ paths:
                     amount: 59990
                     currency: "CLP"
                     method: "MERCADOPAGO"
+                    provider: "MERCADOPAGO"
+                    providerPreferenceId: "123456789-abcd-efgh"
+                    providerPaymentId: "987654321"
+                    checkoutUrl:
+                    providerStatus: "approved"
                     status: "APPROVED"
                     idempotencyKey: "11111111-2222-4333-8444-555555555555"
                     correlationId: "99999999-8888-4777-9666-555555555555"
-                    failureReason: null
+                    failureReason:
                     createdAt: "2026-06-15T20:00:00Z"
                     updatedAt: "2026-06-15T20:00:05Z"
                 idempotentResponse:
@@ -307,6 +329,7 @@ paths:
                     status: "APPROVED"
                     idempotent: true
                     message: "Pago ya se encuentra en estado final. No se reprocesó."
+                    checkoutUrl:
         "400":
           description: Acción inválida o pago en estado no confirmable.
           content:
@@ -326,6 +349,55 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/PaymentNotFound"
+
+  /v1/payments/webhooks/mercadopago:
+    post:
+      tags:
+        - Payments
+      summary: Webhook de Mercado Pago
+      description: >
+        Recibe notificaciones enviadas por Mercado Pago cuando cambia el estado
+        de un pago. Este endpoint es de uso técnico entre Mercado Pago y G8,
+        no está pensado para ser consumido directamente por otros grupos.
+        G8 utiliza esta información para actualizar el estado interno del pago
+        y publicar eventos como PAYMENT_APPROVED, PAYMENT_REJECTED o PAYMENT_PENDING.
+      operationId: receiveMercadoPagoWebhook
+      parameters:
+        - $ref: "#/components/parameters/CorrelationIdHeader"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Payload enviado por Mercado Pago.
+            example:
+              type: "payment"
+              data:
+                id: "987654321"
+      responses:
+        "200":
+          description: Notificación recibida correctamente.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Webhook recibido correctamente."
+        "400":
+          description: Payload inválido o evento no soportado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "INVALID_MERCADOPAGO_WEBHOOK"
+                message: "El webhook recibido no contiene información válida de pago."
 
   # ─────────────────────────────────────────────
   # NOTIFICACIONES
@@ -445,6 +517,8 @@ paths:
                 userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
                 amount: 59990
                 currency: "CLP"
+                provider: "MERCADOPAGO"
+                providerPaymentId: "987654321"
       responses:
         "201":
           description: Notificación generada correctamente.
@@ -467,6 +541,8 @@ paths:
                   userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
                   amount: 59990
                   currency: "CLP"
+                  provider: MERCADOPAGO
+                  providerPaymentId: '987654321'
                 createdAt: "2026-06-15T20:00:02Z"
         "200":
           description: >
@@ -509,7 +585,8 @@ paths:
                 message: "El eventType recibido no genera notificaciones en este servicio."
                 details:
                   - field: "eventType"
-                    message: "Valor recibido 'UNKNOWN_EVENT' no está soportado. Valores válidos: ORDER_CREATED, PAYMENT_APPROVED, PAYMENT_REJECTED, PAYMENT_PENDING, SHIPMENT_DELIVERED, STOCK_REJECTED."
+                    message: "Valor recibido 'UNKNOWN_EVENT' no está soportado. Valores válidos: ORDER_CREATED,
+                      PAYMENT_APPROVED, PAYMENT_REJECTED, PAYMENT_PENDING, SHIPMENT_DELIVERED, STOCK_REJECTED."
 
 components:
 
@@ -573,7 +650,8 @@ components:
           type: integer
           format: int64
           minimum: 1
-          description: Monto a cobrar en CLP, sin decimales. Debe ser mayor a cero. Equivale a LONG en Java/otros lenguajes.
+          description: Monto a cobrar en CLP, sin decimales. Debe ser mayor a cero. Equivale a LONG 
+            en Java/otros lenguajes.
           example: 59990
         currency:
           type: string
@@ -583,10 +661,10 @@ components:
           example: "CLP"
         method:
           type: string
-          description: Pasarela de pago seleccionada por el usuario.
+          description: Pasarela de pago seleccionada. En la versión actual solo se implementa 
+            Mercado Pago en ambiente de prueba.
           enum:
             - MERCADOPAGO
-            - TRANSBANK
           example: "MERCADOPAGO"
 
     Payment:
@@ -602,6 +680,7 @@ components:
         - idempotencyKey
         - createdAt
         - updatedAt
+        - provider
       properties:
         paymentId:
           type: string
@@ -617,7 +696,8 @@ components:
         amount:
           type: integer
           format: int64
-          description: Monto del pago en CLP, sin decimales. Equivale a LONG en Java/otros lenguajes.
+          description: Monto del pago en CLP, sin decimales. Equivale a LONG en Java/otros 
+            lenguajes.
           example: 59990
         currency:
           type: string
@@ -626,7 +706,35 @@ components:
           type: string
           enum:
             - MERCADOPAGO
-            - TRANSBANK
+          description: Pasarela de pago utilizada. En la versión actual solo se implementa Mercado 
+            Pago en ambiente de prueba.
+        provider:
+          type: string
+          enum:
+            - MERCADOPAGO
+          description: Proveedor externo utilizado para procesar el pago.
+          example: "MERCADOPAGO"
+        providerPreferenceId:
+          type: string
+          nullable: true
+          description: ID de la preferencia creada en Mercado Pago.
+          example: "123456789-abcd-efgh"
+        providerPaymentId:
+          type: string
+          nullable: true
+          description: ID del pago generado por Mercado Pago cuando ya existe una transacción.
+          example: "987654321"
+        checkoutUrl:
+          type: string
+          nullable: true
+          description: URL entregada por Mercado Pago para que el usuario continúe el pago.
+          example: "https://www.mercadopago.cl/checkout/v1/redirect?pref_id=123456789-abcd-efgh"
+        providerStatus:
+          type: string
+          nullable: true
+          description: Estado original informado por Mercado Pago antes de mapearlo al estado 
+            interno.
+          example: "approved"
         status:
           type: string
           enum:
@@ -679,7 +787,12 @@ components:
           example: true
         message:
           type: string
-          example: "Pago ya procesado con este idempotencyKey."
+          example: "Operación idempotente. No se reprocesó el pago."
+        checkoutUrl:
+          type: string
+          nullable: true
+          description: URL de checkout original generada para este pago.
+          example: "https://www.mercadopago.cl/checkout/v1/redirect?pref_id=123456789-abcd-efgh"
 
     PaymentListResponse:
       type: object
@@ -768,18 +881,13 @@ components:
             Para ShipmentDelivered (Grupo 6): los campos vienen en camelCase
             (orderId, shipmentId, userId) y el servicio los procesa directamente.
           example:
-            eventId: "evt-shipment-001"
-            eventType: "SHIPMENT_DELIVERED"
-            version: "1.0"
-            occurredAt: "2026-07-07T18:00:00Z"
-            producer: "g6-envios"
-            correlationId: "99999999-8888-4777-9666-555555555555"
-            payload:
-              shipmentId: "SHP-001"
-              orderId: "ORD-001"
-              userId: "e9d8c7b6-a543-2109-8765-fedcba098765"
-              status: "DELIVERED"
-
+            paymentId: PAY-a1b2c3d4-e5f6-7890-1234-56789abcdef0
+            orderId: ORD-20260611-001
+            userId: e9d8c7b6-a543-2109-8765-fedcba098765
+            amount: 59990
+            currency: CLP
+            provider: MERCADOPAGO
+            providerPaymentId: '987654321'
     Notification:
       type: object
       required:
@@ -949,7 +1057,8 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: ID de trazabilidad distribuida propagado desde el request, cuando está disponible.
+          description: ID de trazabilidad distribuida propagado desde el request, cuando está 
+            disponible.
 
   responses:
 
@@ -994,24 +1103,30 @@ components:
             message: "No se encontraron notificaciones para el userId indicado."
 
     UnprocessablePayment:
-      description: El pago no pudo ser simulado por datos de negocio inválidos.
+      description: El pago no pudo ser procesado por datos de negocio inválidos o por error en la 
+        integración con Mercado Pago.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
             code: "UNPROCESSABLE_PAYMENT"
-            message: "El pago no pudo ser procesado. Verifique los datos enviados."
+            message: "El pago no pudo ser procesado. Verifique los datos enviados o la respuesta del proveedor
+              de pago."
 
-------------------------------------------------------------------------------------------
-
-Flujo actualizado de integración:
-
-1. G4 Checkout recopila carrito, total, dirección y método de pago.
-2. G4 solicita a G5 crear el pedido.
-3. G5 crea el pedido con estado PENDING_PAYMENT y retorna orderId.
-4. G4 llama a G8 mediante POST /v1/payments usando ese orderId.
-5. G8 simula el pago y retorna APPROVED, REJECTED o PENDING.
-6. G8 publica el evento PAYMENT_APPROVED, PAYMENT_REJECTED o PAYMENT_PENDING.
-7. G5 consume el evento y actualiza el estado del pedido.
-8. G8 Notificaciones genera la notificación correspondiente.
+x-integration-flow:
+  title: Flujo actualizado de integración con Mercado Pago
+  steps:
+    - G4 Checkout recopila carrito, total, dirección y método de pago.
+    - G4 solicita a G5 crear el pedido.
+    - G5 crea el pedido con estado PENDING_PAYMENT y retorna orderId.
+    - G4 llama a G8 mediante POST /v1/payments usando ese orderId.
+    - G8 crea una preferencia de pago en Mercado Pago usando credenciales de prueba.
+    - G8 registra el pago en estado PENDING y retorna a G4 el checkoutUrl.
+    - G4 redirige al usuario al checkoutUrl de Mercado Pago.
+    - El usuario realiza una compra de prueba usando tarjetas de prueba de Mercado Pago.
+    - Mercado Pago notifica el resultado a G8 mediante webhook.
+    - G8 actualiza el estado interno del pago a APPROVED, REJECTED o PENDING.
+    - G8 publica el evento PAYMENT_APPROVED, PAYMENT_REJECTED o PAYMENT_PENDING.
+    - G5 consume el evento y actualiza el estado del pedido.
+    - G8 Notificaciones genera la notificación correspondiente.

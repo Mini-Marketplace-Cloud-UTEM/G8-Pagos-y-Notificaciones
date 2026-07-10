@@ -19,6 +19,11 @@ class PaymentResponse(BaseModel):
     currency: str
     method: str
     status: str
+    provider: str = "MERCADOPAGO"
+    provider_preference_id: Optional[str] = Field(None, alias="providerPreferenceId")
+    provider_payment_id: Optional[str] = Field(None, alias="providerPaymentId")
+    checkout_url: Optional[str] = Field(None, alias="checkoutUrl")
+    provider_status: Optional[str] = Field(None, alias="providerStatus")
     idempotency_key: str = Field(alias="idempotencyKey")
     correlation_id: Optional[str] = Field(None, alias="correlationId")
     failure_reason: Optional[str] = Field(None, alias="failureReason")
@@ -38,6 +43,7 @@ class PaymentIdempotentResponse(BaseModel):
     status: str
     idempotent: bool = True
     message: str
+    checkout_url: Optional[str] = Field(None, alias="checkoutUrl")
 
     class Config:
         populate_by_name = True
