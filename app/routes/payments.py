@@ -1,32 +1,63 @@
+import logging
 import math
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from typing import Optional, Dict, Any
-from datetime import datetime, timezone
-from app.database.supabase_client import supabase
-from app.services.payment_service import payment_service
-from app.services.mercadopago_service import mercadopago_service
 
-# Importamos los modelos desde nuestra nueva carpeta schemas
+from app.database.supabase_client import supabase
 from app.schemas.payments import (
-    CreatePaymentRequest,
-    PaymentResponse,
-    PaymentListResponse,
-    PaginationResponse,
-    ErrorResponse,
     ConfirmPaymentRequest,
-    PaymentIdempotentResponse
+    CreatePaymentRequest,
+    ErrorResponse,
+    PaginationResponse,
+    PaymentIdempotentResponse,
+    PaymentListResponse,
+    PaymentResponse,
 )
-
-# Importamos el servicio de pagos (lo implementó Compañero 1)
+from app.services.mercadopago_service import mercadopago_service
+from app.services.payment_event_publisher import (
+    payment_event_publisher,
+)
 from app.services.payment_service import payment_service
 
-# Importamos la conexión a Supabase
-from app.database.supabase_client import supabase
+logger = logging.getLogger(__name__)
 
 # Creamos el router. El prefix nos ahorra escribir /v1/payments en cada ruta.
 router = APIRouter(prefix="/v1/payments", tags=["Payments"])
 
+def _publish_payment_event_safely(
+    payment: dict[str, Any],
+    source: str,
+) -> Optional[dict[str, str]]:
+    """
+    Intenta publicar el evento sin romper el flujo principal del pago.
+
+    Si Pub/Sub falla, el pago permanece creado o actualizado y
+    el error queda registrado en los logs de Render.
+    """
+
+    try:
+        result = payment_event_publisher.publish_payment_status(
+            payment=payment,
+            source=source,
+        )
+
+        logger.info(
+            "Evento publicado correctamente: %s",
+            result,
+        )
+
+        return result
+
+    except Exception:
+        logger.exception(
+            "No se pudo publicar el evento del pago %s.",
+            payment.get("payment_id"),
+        )
+
+        return None
 
 def _unauthorized_response(correlation_id: Optional[str]) -> JSONResponse:
     """Respuesta estándar para requests sin token de autorización."""
@@ -77,6 +108,11 @@ def create_payment(
                     "message": "Pago ya iniciado con este idempotencyKey.",
                 },
             )
+
+        _publish_payment_event_safely(
+            payment=payment,
+            source="payment-created",
+        )
 
         return PaymentResponse.model_validate(payment)
 
@@ -328,8 +364,23 @@ def confirm_payment(
         .execute()
     )
 
-    # Devolvemos el pago con el estado actualizado
-    return PaymentResponse.model_validate(update_result.data[0])
+    if not update_result.data:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "PAYMENT_UPDATE_ERROR",
+                "message": "No se pudo actualizar el pago.",
+            },
+        )
+
+    updated_payment = update_result.data[0]
+
+    _publish_payment_event_safely(
+        payment=updated_payment,
+        source="manual-confirmation",
+    )
+
+    return PaymentResponse.model_validate(updated_payment)
 
 def _map_mercadopago_status(provider_status: Optional[str]) -> str:
     if provider_status == "approved":
@@ -432,8 +483,18 @@ async def receive_mercadopago_webhook(request: Request):
                 "processed": False,
                 "providerPaymentId": str(provider_payment_id),
                 "paymentId": payment_id,
-                "message": "Webhook recibido, pero no se encontró el pago en Supabase.",
+                "message": (
+                    "Webhook recibido, pero no se encontró "
+                    "el pago en Supabase."
+                ),
             }
+
+        updated_payment = update_result.data[0]
+
+        event_result = _publish_payment_event_safely(
+            payment=updated_payment,
+            source="mercadopago-webhook",
+        )
 
         return {
             "received": True,
@@ -442,6 +503,17 @@ async def receive_mercadopago_webhook(request: Request):
             "providerPaymentId": str(provider_payment_id),
             "providerStatus": provider_status,
             "status": internal_status,
+            "eventPublished": event_result is not None,
+            "eventId": (
+                event_result.get("eventId")
+                if event_result
+                else None
+            ),
+            "eventMessageId": (
+                event_result.get("messageId")
+                if event_result
+                else None
+            ),
             "message": "Webhook procesado correctamente.",
         }
 
