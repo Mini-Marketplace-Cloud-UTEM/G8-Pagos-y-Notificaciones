@@ -20,6 +20,9 @@ from app.services.mercadopago_service import mercadopago_service
 from app.services.payment_event_publisher import (
     payment_event_publisher,
 )
+from app.services.payment_notification_service import (
+    payment_notification_service,
+)
 from app.services.payment_service import payment_service
 
 logger = logging.getLogger(__name__)
@@ -68,6 +71,35 @@ def _unauthorized_response(correlation_id: Optional[str]) -> JSONResponse:
     )
     return JSONResponse(status_code=401, content=body.model_dump(by_alias=True))
 
+def _create_payment_notification_safely(
+    payment: dict[str, Any],
+    source: str,
+) -> Optional[dict[str, Any]]:
+    """
+    Crea la notificación sin romper el pago si Supabase
+    presenta un error temporal.
+    """
+
+    try:
+        result = payment_notification_service.create_from_payment(
+            payment=payment,
+            source=source,
+        )
+
+        logger.info(
+            "Notificación de pago procesada correctamente: %s",
+            result,
+        )
+
+        return result
+
+    except Exception:
+        logger.exception(
+            "No se pudo crear la notificación del pago %s.",
+            payment.get("payment_id"),
+        )
+
+        return None
 
 # ─────────────────────────────────────────────
 # POST /v1/payments — Compañero 1
@@ -110,6 +142,11 @@ def create_payment(
             )
 
         _publish_payment_event_safely(
+            payment=payment,
+            source="payment-created",
+        )
+
+        _create_payment_notification_safely(
             payment=payment,
             source="payment-created",
         )
@@ -380,6 +417,11 @@ def confirm_payment(
         source="manual-confirmation",
     )
 
+    _create_payment_notification_safely(
+        payment=updated_payment,
+        source="manual-confirmation",
+    )
+
     return PaymentResponse.model_validate(updated_payment)
 
 def _map_mercadopago_status(provider_status: Optional[str]) -> str:
@@ -496,6 +538,11 @@ async def receive_mercadopago_webhook(request: Request):
             source="mercadopago-webhook",
         )
 
+        notification_result = _create_payment_notification_safely(
+            payment=updated_payment,
+            source="mercadopago-webhook",
+        )
+
         return {
             "received": True,
             "processed": True,
@@ -512,6 +559,14 @@ async def receive_mercadopago_webhook(request: Request):
             "eventMessageId": (
                 event_result.get("messageId")
                 if event_result
+                else None
+            ),
+            "notificationCreated": (
+                notification_result is not None
+            ),
+            "notificationId": (
+                notification_result.get("notificationId")
+                if notification_result
                 else None
             ),
             "message": "Webhook procesado correctamente.",
